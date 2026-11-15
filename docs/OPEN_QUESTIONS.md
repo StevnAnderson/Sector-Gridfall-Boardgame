@@ -89,22 +89,33 @@ Rounds are simultaneous: from one hex, select any number of mobile pieces (Bases
 never move) and queue them to the same adjacent destination. Allied hexes and
 hexes targeted by other allied moves are valid destinations, so armies merge
 whether one moves into another or several meet on an empty hex. Enemy-held hexes
-are valid too. Resolution is staged: uncontested arrivals move first; any hex
-that would then hold both sides in the same round becomes a conflict, the
-attacking groups stay in their origin hexes, and the round pauses in the battle
-phase. The host resolves each conflict with the battle engine (no retreats,
-automatic targeting), writes surviving HP back to the map, and the attacking
-survivors take the hex only when every defending unit is destroyed; a surviving
-defender structure keeps the hex. A head-on clash over an empty hex arbitrarily
-treats Player B as the defender. After the battle phase, each Worker on a
-resource node harvests one of that resource for its own side, and the round
+are valid too. Resolution is staged: construction first, then uncontested
+arrivals; any hex that would then hold both sides in the same round becomes a
+conflict, the attacking groups stay in their origin hexes, and the round pauses
+in the battle phase. The host resolves each conflict with the battle engine (no
+retreats, automatic targeting), writes surviving HP back to the map, and the
+attacking survivors take the hex only when every defending unit is destroyed; a
+surviving defender structure keeps the hex. A head-on clash over an empty hex
+arbitrarily treats Player B as the defender. After the battle phase, each Worker
+on a resource node harvests one of that resource for its own side, and the round
 advances. Online conflict resolution is host-authoritative; practice resolves an
 attack immediately on click instead of planning it simultaneously.
 
-Combat, building and spending are otherwise intentionally absent; resources are
-just a running score. The board is shared by two paired players: the host collects
-both submissions and resolves the round, while the guest sends its plan. Either
-side can forfeit. Matching codes are 5 characters.
+Construction is deliberately compressed into the same round. A selected Worker
+builds any structure on its own hex, and a selected Base trains a Worker; either
+way the piece spends its action and cannot move that round. Refinery and Barracks
+require any owned Base, and Factory requires any owned Barracks, so unlocks are
+per player rather than per hex. Costs are the codex costs — Base 8◆, Refinery 3◆,
+Barracks 5◆, Factory 6◆2▲, Worker 2◆ — and supply caps are the printed per-player
+counts. Each side starts with 4◆ and 0▲ so the first construction phase can do
+something. Build orders travel in the online Submit payload and are validated by
+the host; invalid or unaffordable orders are ignored like forged moves. The
+simplification is that builds complete immediately at resolution rather than
+advancing over a separate construction timer.
+
+The board is shared by two paired players: the host collects both submissions and
+resolves the round, while the guest sends its plan. Either side can forfeit.
+Matching codes are 5 characters.
 
 **Real-time transport is peer-to-peer.** Cross-device games use WebRTC with the
 public PeerJS broker for the initial handshake; no game state touches a server.
@@ -141,9 +152,9 @@ Ordered by how much each adds to a playtest:
 2. **Multi-hex battles** — conflict chains across several hexes, damage split
    across adjacent armies, outnumber across whole teams.
 3. **Map layer** — grow the Play map into the real thing: variable boards, armies
-   as stacks, maneuver tokens, construction and the full battle hand-off. The
-   starter 3×5 map, grouped moves, conflict detection and the battle phase are the
-   first slice.
+   as stacks, maneuver tokens, full construction timers and the full battle
+   hand-off. The starter 3×5 map, grouped moves, conflicts, construction and the
+   battle phase are the first slice.
 4. **Async play** — server-backed, resumable turns so a game can survive both
    players closing their tabs. Live play is already peer-to-peer; persistence and
    matchmaking without a shared code would need a backend.

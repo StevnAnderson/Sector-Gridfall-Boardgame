@@ -6,9 +6,12 @@ import {
   MAP_TILES,
   PLAYER_LABEL,
   UNIT_LABEL,
+  buildOptions,
+  buildUnit,
   canMoveTo,
   canUnitMoveTo,
   createInitialState,
+  describeCost,
   endTurn,
   harvestFor,
   moveUnits,
@@ -21,11 +24,14 @@ import {
   unitHp,
   unitsAt,
   type BattleReport,
+  type BuildOption,
+  type BuildOrder,
   type Conflict,
   type MapTile,
   type PlayMove,
   type PlayState,
   type PlayUnit,
+  type PlayUnitType,
   type Player,
 } from "../game/play";
 import {
@@ -84,6 +90,17 @@ function toggleSelectedIds(
     return other && (other.col !== unit.col || other.row !== unit.row);
   });
   if (otherHex) return [unitId];
+
+  // Structures cannot march, and their window only opens for one piece, so a
+  // structure is always selected on its own.
+  if (getDefinition(unit.typeId).kind === "structure") {
+    return current.includes(unitId) ? [] : [unitId];
+  }
+  const currentHasStructure = current.some((id) => {
+    const other = unitById(state, id);
+    return other && getDefinition(other.typeId).kind === "structure";
+  });
+  if (currentHasStructure) return [unitId];
 
   return current.includes(unitId)
     ? current.filter((id) => id !== unitId)
@@ -148,7 +165,10 @@ function MatchFlow({
 
   const matchRef = useRef<MatchHandle | null>(null);
   const stateRef = useRef<PlayState | null>(null);
-  const pendingRef = useRef<{ a: PlayMove[] | null; b: PlayMove[] | null }>({
+  const pendingRef = useRef<{
+    a: { moves: PlayMove[]; builds: BuildOrder[] } | null;
+    b: { moves: PlayMove[]; builds: BuildOrder[] } | null;
+  }>({
     a: null,
     b: null,
   });
@@ -173,12 +193,12 @@ function MatchFlow({
     handle.send({ kind: "state", state: next });
   };
 
-  const submitMoves = (moves: PlayMove[]) => {
+  const submitMoves = (moves: PlayMove[], builds: BuildOrder[]) => {
     const handle = matchRef.current;
     if (!handle) return;
 
     if (handle.role === "host") {
-      pendingRef.current.a = moves;
+      pendingRef.current.a = { moves, builds };
       // Let the guest know the host is waiting on them. If the guest submitted
       // first, the round resolves right away instead.
       if (!pendingRef.current.b) handle.send({ kind: "ready", player: "a" });
@@ -186,7 +206,7 @@ function MatchFlow({
       return;
     }
 
-    handle.send({ kind: "action", action: { type: "submit", moves } });
+    handle.send({ kind: "action", action: { type: "submit", moves, builds } });
   };
 
   /** Host-only: finish the battle phase, then broadcast the next round. */
@@ -252,7 +272,10 @@ function MatchFlow({
       handle.onState = (next) => rememberState(next);
       handle.onMessage = (message) => {
         if (message.kind !== "action" || message.action.type !== "submit") return;
-        pendingRef.current.b = message.action.moves;
+        pendingRef.current.b = {
+          moves: message.action.moves,
+          builds: message.action.builds ?? [],
+        };
         setOpponentReady(true);
         resolveIfReady(handle);
       };
@@ -432,13 +455,14 @@ function OnlineStarter({
   match: MatchHandle;
   state: PlayState;
   opponentReady: boolean;
-  onSubmit: (moves: PlayMove[]) => void;
+  onSubmit: (moves: PlayMove[], builds: BuildOrder[]) => void;
   onResolveBattles: () => void;
   onFinish: (reason: string, leaveDelay?: number) => void;
 }) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [inspectedId, setInspectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<PlayMove[]>([]);
+  const [builds, setBuilds] = useState<BuildOrder[]>([]);
   const [submitted, setSubmitted] = useState(false);
 
   const me = match.player;
@@ -456,11 +480,19 @@ function OnlineStarter({
       (entry): entry is { move: PlayMove; unit: PlayUnit } =>
         entry.unit !== undefined,
     );
+  const buildOrders = builds
+    .map((order) => ({ order, unit: unitById(state, order.builderId) }))
+    .filter(
+      (entry): entry is { order: BuildOrder; unit: PlayUnit } =>
+        entry.unit !== undefined,
+    );
+  const queuedCount = orders.length + buildOrders.length;
 
   // A new round means both plans resolved; clear the local submission.
   useEffect(() => {
     setSelectedIds([]);
     setDraft([]);
+    setBuilds([]);
     setSubmitted(false);
   }, [state.turn]);
 
@@ -470,11 +502,27 @@ function OnlineStarter({
     if (state.phase === "battle") {
       setSelectedIds([]);
       setDraft([]);
+      setBuilds([]);
     }
   }, [state.phase]);
 
   const removeOrder = (unitId: string) => {
     setDraft((current) => current.filter((move) => move.unitId !== unitId));
+  };
+
+  const removeBuild = (builderId: string) => {
+    setBuilds((current) => current.filter((order) => order.builderId !== builderId));
+  };
+
+  const addBuild = (builderId: string, typeId: PlayUnitType) => {
+    if (submitted || state.phase === "battle") return;
+    // One action per piece: a build replaces that piece's queued move.
+    setDraft((current) => current.filter((move) => move.unitId !== builderId));
+    setBuilds((current) => [
+      ...current.filter((order) => order.builderId !== builderId),
+      { builderId, typeId },
+    ]);
+    setSelectedIds([]);
   };
 
   const toggleSelection = (unitId: string) => {
@@ -498,6 +546,7 @@ function OnlineStarter({
           row: tile.row,
         })),
       ]);
+      setBuilds((current) => current.filter((order) => !ids.has(order.builderId)));
       setSelectedIds([]);
       setInspectedId(tile.id);
       return;
@@ -512,7 +561,7 @@ function OnlineStarter({
     if (submitted) return;
     setSubmitted(true);
     setSelectedIds([]);
-    onSubmit(draft);
+    onSubmit(draft, builds);
   };
 
   const forfeit = () => {
@@ -535,8 +584,8 @@ function OnlineStarter({
           ? `${PLAYER_LABEL[opponent]} has submitted. Send your orders when ready.`
           : selectedUnits.length > 0
             ? `${unitGroupLabel(state, selectedIds)} selected — click a highlighted neighbour.`
-            : orders.length > 0
-              ? `${orders.length} order${orders.length === 1 ? "" : "s"} queued. Submit when ready.`
+            : queuedCount > 0
+              ? `${queuedCount} order${queuedCount === 1 ? "" : "s"} queued. Submit when ready.`
               : "Click one of your hexes, choose pieces from the hex panel, then click a highlighted neighbour.";
 
   const locked = submitted || state.phase === "battle";
@@ -561,7 +610,9 @@ function OnlineStarter({
             selectedIds={selectedIds}
             disabled={locked}
             draft={draft}
+            builds={builds}
             onToggle={toggleSelection}
+            onBuild={addBuild}
           />
         </aside>
 
@@ -610,6 +661,7 @@ function OnlineStarter({
             inspectedId={inspectedId}
             onTileClick={onTileClick}
             draft={draft}
+            builds={builds}
             disabled={locked}
             canReach={(unit, col, row) => canUnitMoveTo(state, unit, col, row)}
           />
@@ -620,8 +672,8 @@ function OnlineStarter({
                 ? canResolve
                   ? "The battle phase pauses the round until every conflict is resolved."
                   : "The host will resolve the battles, then the next round begins."
-                : orders.length > 0
-                  ? `${orders.length} order${orders.length === 1 ? "" : "s"} queued. Workers harvest when both players submit.`
+                : queuedCount > 0
+                  ? `${queuedCount} order${queuedCount === 1 ? "" : "s"} queued. Workers harvest when both players submit.`
                   : "Select one or more pieces on a hex, march them together, then submit. Workers harvest when the round resolves."}
             </span>
             <div className="play-action-buttons">
@@ -645,11 +697,11 @@ function OnlineStarter({
           <section className="panel">
             <div className="panel-head">
               <h3>Orders</h3>
-              <span className="muted small">{orders.length} queued</span>
+              <span className="muted small">{queuedCount} queued</span>
             </div>
-            {orders.length === 0 ? (
+            {queuedCount === 0 ? (
               <p className="muted small">
-                No moves queued. You can submit to hold position.
+                No orders queued. You can submit to hold position.
               </p>
             ) : (
               <ul className="play-orders">
@@ -665,6 +717,23 @@ function OnlineStarter({
                       onClick={() => removeOrder(unit.id)}
                       disabled={submitted}
                       aria-label={`Remove order for ${UNIT_LABEL[unit.typeId]} at ${tileLabel(unit.col, unit.row)}`}
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+                {buildOrders.map(({ order, unit }) => (
+                  <li key={`build-${unit.id}`} className={`play-order owner-${unit.owner}`}>
+                    <span className="play-order-move">
+                      <strong>{UNIT_LABEL[unit.typeId]}</strong>{" "}
+                      {tileLabel(unit.col, unit.row)} ⚒ {UNIT_LABEL[order.typeId]}
+                    </span>
+                    <button
+                      className="play-order-remove"
+                      type="button"
+                      onClick={() => removeBuild(unit.id)}
+                      disabled={submitted}
+                      aria-label={`Remove build order for ${UNIT_LABEL[unit.typeId]} at ${tileLabel(unit.col, unit.row)}`}
                     >
                       ×
                     </button>
@@ -689,6 +758,12 @@ function OnlineStarter({
               <li>
                 Choose one or more Workers or Soldiers in the panel, then click a
                 highlighted adjacent hex. The whole group marches together.
+              </li>
+              <li>
+                Select a single Worker to open the build window for its hex:
+                Refinery, Barracks and Factory unlock as you own their
+                prerequisites. Select a Base to train a Worker. Building spends
+                that piece's action for the round.
               </li>
               <li>
                 Any number of allied pieces can share a hex. Moving into an allied
@@ -732,6 +807,7 @@ function StarterBoard({
   onTileClick,
   canReach,
   draft = [],
+  builds = [],
   disabled = false,
 }: {
   state: PlayState;
@@ -740,6 +816,7 @@ function StarterBoard({
   onTileClick: (tile: MapTile) => void;
   canReach: (unit: PlayUnit, col: number, row: number) => boolean;
   draft?: PlayMove[];
+  builds?: BuildOrder[];
   disabled?: boolean;
 }) {
   const selectedUnits = selectedIds
@@ -791,6 +868,10 @@ function StarterBoard({
             occupants.every((unit) =>
               draft.some((move) => move.unitId === unit.id),
             );
+          const buildHere = builds.filter((order) => {
+            const builder = unitById(state, order.builderId);
+            return builder?.col === tile.col && builder.row === tile.row;
+          }).length;
           const classes = [
             "hex-tile",
             tile.resource ? `has-resource resource-${tile.resource}` : "",
@@ -801,6 +882,7 @@ function StarterBoard({
             owner ? `has-unit owner-${owner}` : "",
             draftMoves.length > 0 ? "is-draft-target" : "",
             allQueued ? "is-draft-source" : "",
+            buildHere > 0 ? "is-build-target" : "",
             conflictTarget ? "is-conflict" : "",
             conflictSource ? "is-conflict-source" : "",
             disabled ? "is-locked" : "",
@@ -821,8 +903,8 @@ function StarterBoard({
               aria-label={`${tileLabel(tile.col, tile.row)}${tile.resource ? `, ${tile.resource}` : ""}${
                 owner ? `, occupied by ${PLAYER_LABEL[owner]}` : ""
               }${draftMoves.length > 0 ? ", queued move here" : ""}${
-                conflictTarget ? ", conflict" : ""
-              }`}
+                buildHere > 0 ? ", construction queued here" : ""
+              }${conflictTarget ? ", conflict" : ""}`}
             >
               <span className="hex-face">
                 {tile.resource && (
@@ -847,6 +929,11 @@ function StarterBoard({
                     aria-hidden="true"
                   >
                     →{draftMoves.length > 1 ? draftMoves.length : ""}
+                  </span>
+                )}
+                {buildHere > 0 && (
+                  <span className="hex-build-marker" aria-hidden="true">
+                    ⚒{buildHere > 1 ? buildHere : ""}
                   </span>
                 )}
                 <span className="hex-coord" aria-hidden="true">
@@ -1030,6 +1117,74 @@ function BattleReportCard({ report }: { report: BattleReport }) {
   );
 }
 
+function BuildWindow({
+  builder,
+  options,
+  queued,
+  onBuild,
+}: {
+  builder: PlayUnit;
+  options: BuildOption[];
+  queued: BuildOrder | undefined;
+  onBuild: (typeId: PlayUnitType) => void;
+}) {
+  const trains = builder.typeId === "base";
+  return (
+    <div className="play-build">
+      <div className="play-build-head">
+        <h4>{trains ? "Train here" : "Build here"}</h4>
+        <span className="muted small">
+          {tileLabel(builder.col, builder.row)}
+        </span>
+      </div>
+      <p className="muted small">
+        {trains
+          ? "The Base spends its action to train a Worker on this hex."
+          : "The Worker spends its action to construct a structure on this hex."}
+      </p>
+      <ul className="play-build-list">
+        {options.map((option) => {
+          const disabled = queued !== undefined || !option.enabled;
+          const reason =
+            queued !== undefined
+              ? `Queued: ${UNIT_LABEL[queued.typeId]}`
+              : option.reason;
+          return (
+            <li key={option.typeId}>
+              <button
+                className="play-build-option"
+                type="button"
+                onClick={() => onBuild(option.typeId)}
+                disabled={disabled}
+              >
+                <span
+                  className="play-build-glyph"
+                  style={{ color: typeColor(option.typeId) }}
+                  aria-hidden="true"
+                >
+                  {option.glyph}
+                </span>
+                <span className="play-build-body">
+                  <span className="play-build-name">
+                    <strong>{option.name}</strong>
+                    <span className="play-build-cost">
+                      {describeCost(option.cost)}
+                    </span>
+                  </span>
+                  <span className="play-build-note">
+                    {reason ??
+                      `Supply ${option.supplyUsed}/${option.supplyMax}`}
+                  </span>
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function HexInspector({
   state,
   tile,
@@ -1037,6 +1192,8 @@ function HexInspector({
   selectedIds,
   onToggle,
   draft = [],
+  builds = [],
+  onBuild,
   disabled = false,
 }: {
   state: PlayState;
@@ -1045,6 +1202,8 @@ function HexInspector({
   selectedIds: string[];
   onToggle: (unitId: string) => void;
   draft?: PlayMove[];
+  builds?: BuildOrder[];
+  onBuild?: (builderId: string, typeId: PlayUnitType) => void;
   disabled?: boolean;
 }) {
   const occupants = tile ? unitsAt(state, tile.col, tile.row) : [];
@@ -1057,10 +1216,25 @@ function HexInspector({
         conflict.target.col === tile.col && conflict.target.row === tile.row,
     );
   const revealEnemy = enemy && state.phase === "battle" && conflictHere;
-  const hasSelectable = occupants.some(
-    (unit) =>
-      owner === viewer && !disabled && unit.typeId !== "base" && !unit.moved,
-  );
+  const canAct = (unit: PlayUnit) =>
+    owner === viewer &&
+    !disabled &&
+    !unit.moved &&
+    (getDefinition(unit.typeId).kind !== "structure" ||
+      buildOptions(state, viewer, unit.id).length > 0);
+  const hasSelectable = occupants.some(canAct);
+  const selectedPieces = selectedIds
+    .map((id) => unitById(state, id))
+    .filter((unit): unit is PlayUnit => unit !== undefined);
+  const onlyPiece = selectedPieces.length === 1 ? selectedPieces[0] : undefined;
+  const builder =
+    !disabled && onlyPiece !== undefined && onlyPiece.owner === viewer
+      ? onlyPiece
+      : undefined;
+  const options = builder ? buildOptions(state, viewer, builder.id) : [];
+  const queuedBuild = builder
+    ? builds.find((order) => order.builderId === builder.id)
+    : undefined;
 
   return (
     <section className="panel play-inspector">
@@ -1092,21 +1266,22 @@ function HexInspector({
           <ul className="play-inspector-list">
             {occupants.map((unit) => {
               const order = draft.find((move) => move.unitId === unit.id);
-              const selectable =
-                owner === viewer &&
-                !disabled &&
-                unit.typeId !== "base" &&
-                !unit.moved;
+              const build = builds.find((entry) => entry.builderId === unit.id);
+              const selectable = canAct(unit);
               const hp = unitHp(unit);
               const maxHp = getDefinition(unit.typeId).hp;
-              const note =
-                unit.typeId === "base"
-                  ? "Structure · cannot move"
-                  : unit.moved
-                    ? "Already moved"
-                    : order
-                      ? `Queued → ${tileLabel(order.col, order.row)}`
-                      : "Ready to move";
+              const isStructure = getDefinition(unit.typeId).kind === "structure";
+              const note = build
+                ? `Building ${UNIT_LABEL[build.typeId]}`
+                : unit.typeId === "base"
+                  ? "Structure · cannot move · trains Workers"
+                  : isStructure
+                    ? "Structure · cannot move"
+                    : unit.moved
+                      ? "Already acted"
+                      : order
+                        ? `Queued → ${tileLabel(order.col, order.row)}`
+                        : "Ready to move";
               return (
                 <li key={unit.id}>
                   <button
@@ -1136,11 +1311,19 @@ function HexInspector({
               );
             })}
           </ul>
+          {builder && options.length > 0 && (
+            <BuildWindow
+              builder={builder}
+              options={options}
+              queued={queuedBuild}
+              onBuild={(typeId) => onBuild?.(builder.id, typeId)}
+            />
+          )}
           {owner === viewer && hasSelectable && (
             <p className="muted small">
               {selectedIds.length > 0
                 ? `${selectedIds.length} selected. Click a highlighted neighbour to march the group together.`
-                : "Select one or more pieces, then click a highlighted neighbouring hex."}
+                : "Select one or more pieces, then click a highlighted neighbouring hex. Select a single Worker or Base to build."}
             </p>
           )}
           {revealEnemy && (
@@ -1256,7 +1439,7 @@ function StarterPlay() {
     : undefined;
   const income = harvestFor(state, state.active);
   const readyUnits = state.units.filter(
-    (unit) => unit.owner === state.active && unit.typeId !== "base" && !unit.moved,
+    (unit) => unit.owner === state.active && !unit.moved,
   ).length;
 
   useEffect(() => {
@@ -1271,6 +1454,14 @@ function StarterPlay() {
 
   const toggleSelection = (unitId: string) => {
     setSelectedIds((current) => toggleSelectedIds(state, current, unitId));
+  };
+
+  const onBuild = (builderId: string, typeId: PlayUnitType) => {
+    const next = buildUnit(state, state.active, builderId, typeId);
+    if (next !== state) {
+      setState(next);
+      setSelectedIds([]);
+    }
   };
 
   const onTileClick = (tile: MapTile) => {
@@ -1314,7 +1505,7 @@ function StarterPlay() {
         ? `${unitGroupLabel(state, selectedIds)} selected — click a highlighted neighbour.`
         : readyUnits > 0
           ? "Click one of your hexes, then choose one or more pieces from the hex panel."
-          : "Every mobile unit has moved. End the turn to harvest and pass play.";
+          : "Every piece has acted. End the turn to harvest and pass play.";
 
   return (
     <div className="stack">
@@ -1335,6 +1526,7 @@ function StarterPlay() {
             selectedIds={selectedIds}
             disabled={state.phase === "battle"}
             onToggle={toggleSelection}
+            onBuild={onBuild}
           />
         </aside>
 
@@ -1422,14 +1614,22 @@ function StarterPlay() {
                 practice. If the enemy leaves, the hex is yours.
               </li>
               <li>A hex shows a dot in its owner's colour instead of each piece.</li>
-              <li>Each unit moves once per turn. Bases hold their edge.</li>
+              <li>
+                Each unit moves once per turn. Bases hold their edge, but a
+                selected Base can train a Worker on its own hex.
+              </li>
+              <li>
+                Select a single Worker to build a structure on its hex. A Base
+                unlocks Refinery and Barracks; a Barracks unlocks the Factory.
+                Building uses the piece's action.
+              </li>
               <li>
                 End the turn to harvest: every Worker standing on a ◆ mineral or ▲ gas
                 node adds 1 to your stock, even when Workers are stacked.
               </li>
               <li>
-                Resources are the score for now. Building and income spending come
-                later.
+                Harvested resources pay for construction and training. Each side
+                starts with 4◆.
               </li>
             </ul>
           </section>

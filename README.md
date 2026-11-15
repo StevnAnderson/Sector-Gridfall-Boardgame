@@ -71,15 +71,21 @@ can also meet on the same empty hex. Enemy-held hexes are valid destinations too
 if the enemy vacates in the same round, your army moves in, but if the enemy stays
 the border turns red and the round pauses for the battle phase. Bases never move.
 
+Select a single Worker to open a build window for that hex: Refinery, Barracks and
+Factory become buildable as their prerequisites are owned, and a Base trains new
+Workers. The selected piece spends its action for the round, so it cannot also
+move. Build orders are queued alongside moves and shown on the board and in the
+Orders panel until you submit.
+
 Both players plan at the same time, then click **Submit**. When both sides have
-submitted, uncontested moves resolve, then every conflict is fought with the same
-battle engine as the Battle Lab. The host resolves the battle phase; the guest
-sees the conflict borders and waits. Damage persists between rounds, and a
-surviving defender structure keeps its hex even when every defending unit is gone.
-After the battles, every Worker standing on a node harvests one of that resource
-and the next round begins. Resources are the score. **Forfeit** declares the
-opponent the winner and returns both players to matching. Building and spending
-come later.
+submitted, construction resolves first, then uncontested moves, then every
+conflict is fought with the same battle engine as the Battle Lab. The host
+resolves the battle phase; the guest sees the conflict borders and waits. Damage
+persists between rounds, and a surviving defender structure keeps its hex even
+when every defending unit is gone. After the battles, every Worker standing on a
+node harvests one of that resource and the next round begins. Resources buy
+builds. **Forfeit** declares the opponent the winner and returns both players to
+matching.
 
 Host and guest connect directly over WebRTC (signalled by the free PeerJS broker).
 Tabs in the same browser also pair over `BroadcastChannel`, so a code works offline
@@ -114,6 +120,12 @@ Settled with the designer:
 - **Supply** — the printed card counts are hard per-player limits (12 workers, 12
   soldiers, 12 walkers, 9 artillery, 6 Bases, 8 Barracks, 6 Factories, 5 Refineries).
 - **Builds** — every card takes one turn.
+- **Building on the starter map** — Workers construct structures and Bases train
+  Workers; the builder spends its action for the round. A Base unlocks Refinery
+  and Barracks, and a Barracks unlocks the Factory. Unlocks are per player, not
+  per hex. Each side opens with 4 minerals and 0 gas so construction can start
+  immediately, and builds cost the codex prices: Base 8◆, Refinery 3◆, Barracks
+  5◆, Factory 6◆2▲, Worker 2◆.
 - **Retreats** — retreating units deal no damage, are non-threatening, can be
   skipped as targets, and leave after any band that deals damage. You can change
   the retreat list at the start of every round; units that leave stay gone.
@@ -130,9 +142,9 @@ Everything else the engine had to assume is listed in
 The Battle Lab resolves **one army per side**, which is the atomic battle from
 the rules. The Play tab is a deliberately tiny two-player skirmish: a fixed 3×5
 map, unlimited allied stacking on a hex, grouped moves from one hex per round,
-simultaneous resolution, conflict detection and an auto-resolved battle phase
-before Worker harvesting. Conflict chains that span several hexes, the full map,
-maneuver tokens, escorting and production timers are not modelled yet. See the
-roadmap in the open questions doc.
+simultaneous resolution, construction and Worker training, conflict detection and
+an auto-resolved battle phase before Worker harvesting. Conflict chains that span
+several hexes, the full map, maneuver tokens, escorting and multi-turn production
+timers are not modelled yet. See the roadmap in the open questions doc.
 
 `BoardGame.docx` remains the source of truth for the rules.

@@ -14,12 +14,13 @@
  */
 
 import { resolveBattle, type BattleResult, type SurvivingCard } from "./battle";
-import { getDefinition } from "./codex";
-import type { Card } from "./types";
+import { CARD_BY_ID, CARD_DEFINITIONS, getDefinition } from "./codex";
+import type { Card, Cost } from "./types";
 
 export type Player = "a" | "b";
 export type ResourceType = "minerals" | "gas";
-export type PlayUnitType = "base" | "worker" | "soldier";
+export type PlayStructureType = "base" | "refinery" | "barracks" | "factory";
+export type PlayUnitType = PlayStructureType | "worker" | "soldier";
 
 /** Planning is the normal round. Battle pauses the round while conflicts resolve. */
 export type PlayPhase = "planning" | "battle";
@@ -51,10 +52,52 @@ export interface PlayMove {
   row: number;
 }
 
+/**
+ * A piece constructs or trains something on its own hex. Workers build
+ * structures; Bases train Workers. The builder spends its action for the round,
+ * so it cannot move as well.
+ */
+export interface BuildOrder {
+  builderId: string;
+  typeId: PlayUnitType;
+}
+
+/** One player's orders for a round. */
+export interface PlayerSubmission {
+  moves: PlayMove[];
+  builds: BuildOrder[];
+}
+
+/** Older callers submit a bare move list; both shapes are accepted. */
+export type SubmissionInput = PlayerSubmission | PlayMove[];
+
 /** Both players' plans for a round. The host pairs these up before resolving. */
 export interface RoundSubmissions {
-  a: PlayMove[];
-  b: PlayMove[];
+  a: SubmissionInput;
+  b: SubmissionInput;
+}
+
+export function normalizeSubmission(input: SubmissionInput): PlayerSubmission {
+  return Array.isArray(input) ? { moves: input, builds: [] } : input;
+}
+
+/** Everything a player can build from one selected piece. */
+export interface BuildOption {
+  typeId: PlayUnitType;
+  name: string;
+  kind: "unit" | "structure";
+  cost: Cost;
+  glyph: string;
+  supplyUsed: number;
+  supplyMax: number;
+  enabled: boolean;
+  /** Why the option is unavailable, or null when it can be built. */
+  reason: string | null;
+}
+
+export interface BuildCheck {
+  ok: boolean;
+  reason: string | null;
 }
 
 export interface Stock {
@@ -120,11 +163,14 @@ export interface PlayState {
 
 /** Everything a player can send during an online match. */
 export type PlayAction =
-  | { type: "submit"; moves: PlayMove[] }
+  | { type: "submit"; moves: PlayMove[]; builds: BuildOrder[] }
   | { type: "forfeit" };
 
 export const MAP_COLS = 3;
 export const MAP_ROWS = 5;
+
+/** A small opening stock so the first construction phase has something to spend. */
+export const STARTING_STOCK: Stock = { minerals: 4, gas: 0 };
 
 export const PLAYER_LABEL: Record<Player, string> = {
   a: "Player A",
@@ -133,6 +179,9 @@ export const PLAYER_LABEL: Record<Player, string> = {
 
 export const UNIT_LABEL: Record<PlayUnitType, string> = {
   base: "Base",
+  refinery: "Refinery",
+  barracks: "Barracks",
+  factory: "Factory",
   worker: "Worker",
   soldier: "Soldier",
 };
@@ -243,6 +292,228 @@ export function normalizePlayState(state: PlayState): PlayState {
   };
 }
 
+/** Structures never move once they are on the map. */
+export function isStructureType(typeId: string): boolean {
+  return CARD_BY_ID[typeId]?.kind === "structure";
+}
+
+/** Short "3◆ 1▲" cost string for the build window. */
+export function describeCost(cost: Cost): string {
+  const parts: string[] = [];
+  if (cost.minerals > 0) parts.push(`${cost.minerals}◆`);
+  if (cost.gas > 0) parts.push(`${cost.gas}▲`);
+  return parts.length > 0 ? parts.join(" ") : "free";
+}
+
+/**
+ * Why a particular piece can or cannot build a particular card. Workers build
+ * structures; Bases train Workers. Unlocks are per player: owning a Base
+ * anywhere lets any Worker build a Refinery or Barracks, and owning a Barracks
+ * unlocks the Factory.
+ */
+export function canBuild(
+  state: PlayState,
+  player: Player,
+  builderId: string,
+  typeId: string,
+): BuildCheck {
+  const builder = unitById(state, builderId);
+  if (!builder || builder.owner !== player) {
+    return { ok: false, reason: "Not your piece" };
+  }
+
+  const def = CARD_BY_ID[typeId];
+  if (!def) return { ok: false, reason: "Unknown build" };
+
+  if (state.winner || state.phase !== "planning") {
+    return { ok: false, reason: "Battle phase" };
+  }
+  if (builder.moved) {
+    return { ok: false, reason: "Already acted this round" };
+  }
+
+  if (builder.typeId === "worker") {
+    if (def.kind !== "structure") {
+      return { ok: false, reason: "Workers build structures" };
+    }
+  } else if (builder.typeId === "base") {
+    if (def.id !== "worker") {
+      return { ok: false, reason: "Bases train Workers" };
+    }
+  } else {
+    return { ok: false, reason: "This piece cannot build" };
+  }
+
+  if (def.kind === "structure" && def.id !== "base") {
+    const owned = new Set<string>(
+      state.units.filter((unit) => unit.owner === player).map((unit) => unit.typeId),
+    );
+    const unlocker = CARD_DEFINITIONS.find((entry) =>
+      entry.unlocks?.includes(def.id),
+    );
+    if (unlocker && !owned.has(unlocker.id)) {
+      return { ok: false, reason: `Requires ${unlocker.name}` };
+    }
+  }
+
+  const used = state.units.filter(
+    (unit) => unit.owner === player && unit.typeId === def.id,
+  ).length;
+  if (used >= def.supply) {
+    return { ok: false, reason: `Supply limit ${def.supply}` };
+  }
+
+  const stock = state.stock[player];
+  if (stock.minerals < def.cost.minerals || stock.gas < def.cost.gas) {
+    return { ok: false, reason: `Needs ${describeCost(def.cost)}` };
+  }
+
+  return { ok: true, reason: null };
+}
+
+/** The build window's contents for one selected piece. */
+export function buildOptions(
+  state: PlayState,
+  player: Player,
+  builderId: string,
+): BuildOption[] {
+  const builder = unitById(state, builderId);
+  if (!builder || builder.owner !== player) return [];
+
+  const defs =
+    builder.typeId === "worker"
+      ? CARD_DEFINITIONS.filter((def) => def.kind === "structure")
+      : builder.typeId === "base"
+        ? CARD_DEFINITIONS.filter((def) => def.id === "worker")
+        : [];
+  if (defs.length === 0) return [];
+
+  return defs.map((def) => {
+    const check = canBuild(state, player, builderId, def.id);
+    const used = state.units.filter(
+      (unit) => unit.owner === player && unit.typeId === def.id,
+    ).length;
+    return {
+      typeId: def.id as PlayUnitType,
+      name: def.name,
+      kind: def.kind,
+      cost: def.cost,
+      glyph: def.glyph,
+      supplyUsed: used,
+      supplyMax: def.supply,
+      enabled: check.ok,
+      reason: check.reason,
+    };
+  });
+}
+
+function spawnUnit(
+  units: PlayUnit[],
+  player: Player,
+  typeId: PlayUnitType,
+  col: number,
+  row: number,
+): PlayUnit {
+  const prefix = `${player}-${typeId}`;
+  let index = 1;
+  while (units.some((unit) => unit.id === `${prefix}-${index}`)) index += 1;
+  return {
+    id: `${prefix}-${index}`,
+    owner: player,
+    typeId,
+    col,
+    row,
+    moved: true,
+  };
+}
+
+interface AppliedBuilds {
+  state: PlayState;
+  messages: string[];
+}
+
+/**
+ * Apply one player's build orders in order. Invalid orders are ignored (like
+ * forged moves), and each piece can only build once. Costs are paid from the
+ * stock the player had at the start of the round.
+ */
+function applyBuildOrders(
+  state: PlayState,
+  player: Player,
+  orders: BuildOrder[],
+): AppliedBuilds {
+  let working = state;
+  const messages: string[] = [];
+  const claimed = new Set<string>();
+
+  for (const order of orders) {
+    if (
+      !order ||
+      typeof order.builderId !== "string" ||
+      typeof order.typeId !== "string" ||
+      claimed.has(order.builderId)
+    ) {
+      continue;
+    }
+
+    const check = canBuild(working, player, order.builderId, order.typeId);
+    if (!check.ok) continue;
+
+    const builder = unitById(working, order.builderId);
+    const def = CARD_BY_ID[order.typeId];
+    if (!builder || !def) continue;
+
+    const spawned = spawnUnit(
+      working.units,
+      player,
+      order.typeId,
+      builder.col,
+      builder.row,
+    );
+    claimed.add(order.builderId);
+    working = {
+      ...working,
+      units: [
+        ...working.units.map((unit) =>
+          unit.id === builder.id ? { ...unit, moved: true } : unit,
+        ),
+        spawned,
+      ],
+      stock: {
+        ...working.stock,
+        [player]: {
+          minerals: working.stock[player].minerals - def.cost.minerals,
+          gas: working.stock[player].gas - def.cost.gas,
+        },
+      },
+    };
+    messages.push(
+      `${PLAYER_LABEL[player]} built ${def.name} at ${tileLabel(builder.col, builder.row)}.`,
+    );
+  }
+
+  return { state: working, messages };
+}
+
+/** Practice-mode build: apply one order immediately on the active player's turn. */
+export function buildUnit(
+  state: PlayState,
+  player: Player,
+  builderId: string,
+  typeId: PlayUnitType,
+): PlayState {
+  if (state.winner || state.phase !== "planning" || player !== state.active) {
+    return state;
+  }
+  if (!canBuild(state, player, builderId, typeId).ok) return state;
+
+  const { state: next, messages } = applyBuildOrders(state, player, [
+    { builderId, typeId },
+  ]);
+  if (next === state) return state;
+  return { ...next, log: [...state.log, ...messages].slice(-10) };
+}
+
 export function createInitialState(): PlayState {
   return {
     units: [
@@ -256,8 +527,8 @@ export function createInitialState(): PlayState {
     active: "a",
     turn: 1,
     stock: {
-      a: { minerals: 0, gas: 0 },
-      b: { minerals: 0, gas: 0 },
+      a: { ...STARTING_STOCK },
+      b: { ...STARTING_STOCK },
     },
     log: ["Click one of your hexes to inspect the pieces there."],
     winner: null,
@@ -288,7 +559,7 @@ export function canUnitMoveTo(
   row: number,
 ): boolean {
   void state;
-  if (unit.moved || unit.typeId === "base") return false;
+  if (unit.moved || isStructureType(unit.typeId)) return false;
   if (!inBounds(col, row)) return false;
   return isAdjacent(unit, { col, row });
 }
@@ -489,7 +760,8 @@ function groupAttacks(units: PlayUnit[]): ConflictAttack[] {
 }
 
 interface PlannedRound {
-  units: PlayUnit[];
+  /** The board after construction and uncontested movement. */
+  state: PlayState;
   conflicts: Conflict[];
   log: string[];
 }
@@ -500,14 +772,24 @@ interface PlannedRound {
  * of the battle phase.
  */
 function planRound(state: PlayState, submissions: RoundSubmissions): PlannedRound {
+  const aSubmission = normalizeSubmission(submissions.a);
+  const bSubmission = normalizeSubmission(submissions.b);
+
+  // Construction happens before armies move. Build orders spend the builder's
+  // action, so a Worker that builds cannot also march this round.
+  const builtA = applyBuildOrders(state, "a", aSubmission.builds);
+  const builtB = applyBuildOrders(builtA.state, "b", bSubmission.builds);
+  const working = builtB.state;
+  const buildLog = [...builtA.messages, ...builtB.messages];
+
   const accepted = [
-    ...acceptedMoves(state, "a", submissions.a),
-    ...acceptedMoves(state, "b", submissions.b),
+    ...acceptedMoves(working, "a", aSubmission.moves),
+    ...acceptedMoves(working, "b", bSubmission.moves),
   ];
   const movesByUnit = new Map(accepted.map((entry) => [entry.unit.id, entry]));
 
   const positions = new Map<string, HexCoord>();
-  for (const unit of state.units) {
+  for (const unit of working.units) {
     positions.set(unit.id, { col: unit.col, row: unit.row });
   }
   for (const entry of accepted) {
@@ -522,9 +804,9 @@ function planRound(state: PlayState, submissions: RoundSubmissions): PlannedRoun
 
   // Holding an attacker can create a new clash at its origin, so repeat until
   // every clash has been found. Each piece can be held at most once.
-  for (let pass = 0; pass <= state.units.length; pass += 1) {
+  for (let pass = 0; pass <= working.units.length; pass += 1) {
     const groups = new Map<string, PlayUnit[]>();
-    for (const unit of state.units) {
+    for (const unit of working.units) {
       if (unitHp(unit) <= 0) continue;
       const position = positions.get(unit.id) ?? { col: unit.col, row: unit.row };
       const key = hexId(position.col, position.row);
@@ -544,7 +826,7 @@ function planRound(state: PlayState, submissions: RoundSubmissions): PlannedRoun
       const position = positions.get(lead.id);
       if (!position) continue;
       const target = { col: position.col, row: position.row };
-      const defender = chooseDefender(state, target, group);
+      const defender = chooseDefender(working, target, group);
       const attacker = otherPlayer(defender);
 
       const arrivals = group.filter(
@@ -589,12 +871,12 @@ function planRound(state: PlayState, submissions: RoundSubmissions): PlannedRoun
     attacks: [...entry.attacks.values()],
   }));
 
-  const units = state.units.map((unit) => {
+  const units = working.units.map((unit) => {
     const position = positions.get(unit.id) ?? { col: unit.col, row: unit.row };
     return { ...unit, col: position.col, row: position.row, moved: false };
   });
 
-  const log: string[] = [];
+  const log: string[] = [...buildLog];
   for (const player of ["a", "b"] as Player[]) {
     const moves = accepted.filter(
       (entry) => entry.player === player && !held.has(entry.unit.id),
@@ -616,7 +898,7 @@ function planRound(state: PlayState, submissions: RoundSubmissions): PlannedRoun
     );
   }
 
-  return { units, conflicts, log };
+  return { state: { ...working, units }, conflicts, log };
 }
 
 /** The side that already stood on the hex defends it; an empty clash is arbitrary. */
@@ -828,8 +1110,7 @@ export function resolveRound(
   const plan = planRound(state, submissions);
   if (plan.conflicts.length > 0) {
     return {
-      ...state,
-      units: plan.units,
+      ...plan.state,
       phase: "battle",
       conflicts: plan.conflicts,
       battles: [],
@@ -837,7 +1118,7 @@ export function resolveRound(
     };
   }
 
-  return finishRound(state, plan.units, [], plan.log);
+  return finishRound(plan.state, plan.state.units, [], plan.log);
 }
 
 /**

@@ -3,6 +3,10 @@ import {
   MAP_COLS,
   MAP_ROWS,
   MAP_TILES,
+  STARTING_STOCK,
+  buildOptions,
+  buildUnit,
+  canBuild,
   canMoveTo,
   canUnitMoveTo,
   createInitialState,
@@ -178,7 +182,10 @@ describe("turns and harvesting", () => {
 
     state = endTurn(state);
 
-    expect(state.stock.a).toEqual({ minerals: 1, gas: 0 });
+    expect(state.stock.a).toEqual({
+      minerals: STARTING_STOCK.minerals + 1,
+      gas: STARTING_STOCK.gas,
+    });
     expect(state.active).toBe("b");
     expect(state.turn).toBe(1);
     expect(unitById(state, "a-worker")?.moved).toBe(true);
@@ -204,7 +211,10 @@ describe("turns and harvesting", () => {
     state = endTurn(state); // B's turn, A worker harvests
     state = endTurn(state); // back to A
 
-    expect(state.stock.a).toEqual({ minerals: 1, gas: 0 });
+    expect(state.stock.a).toEqual({
+      minerals: STARTING_STOCK.minerals + 1,
+      gas: STARTING_STOCK.gas,
+    });
     expect(unitById(state, "a-worker")?.moved).toBe(false);
     expect(unitAt(state, 0, 1)?.id).toBe(worker.id);
   });
@@ -230,8 +240,14 @@ describe("simultaneous rounds", () => {
     expect(unitById(next, "b-worker")).toMatchObject({ col: 2, row: 3 });
     expect(unitById(next, "b-soldier")).toMatchObject({ col: 0, row: 3 });
     expect(next.stock).toEqual({
-      a: { minerals: 1, gas: 0 },
-      b: { minerals: 1, gas: 0 },
+      a: {
+        minerals: STARTING_STOCK.minerals + 1,
+        gas: STARTING_STOCK.gas,
+      },
+      b: {
+        minerals: STARTING_STOCK.minerals + 1,
+        gas: STARTING_STOCK.gas,
+      },
     });
     expect(next.turn).toBe(2);
     expect(unitById(next, "a-worker")?.moved).toBe(false);
@@ -489,5 +505,117 @@ describe("conflict and battle phase", () => {
     expect(normalized.phase).toBe("planning");
     expect(normalized.conflicts).toEqual([]);
     expect(normalized.battles).toEqual([]);
+  });
+});
+
+describe("construction and training", () => {
+  it("spends a Worker's action and stock to build on its hex", () => {
+    const state = createInitialState();
+    const next = buildUnit(state, "a", "a-worker", "refinery");
+
+    expect(next.stock.a).toEqual({
+      minerals: STARTING_STOCK.minerals - 3,
+      gas: STARTING_STOCK.gas,
+    });
+    expect(unitById(next, "a-refinery-1")).toMatchObject({
+      owner: "a",
+      typeId: "refinery",
+      col: 0,
+      row: 0,
+    });
+    expect(unitById(next, "a-worker")?.moved).toBe(true);
+  });
+
+  it("lets a Base train a Worker on its own hex", () => {
+    const state = createInitialState();
+    const next = buildUnit(state, "a", "a-base", "worker");
+
+    expect(next.stock.a).toEqual({
+      minerals: STARTING_STOCK.minerals - 2,
+      gas: STARTING_STOCK.gas,
+    });
+    expect(unitById(next, "a-worker-1")).toMatchObject({
+      owner: "a",
+      typeId: "worker",
+      col: 1,
+      row: 0,
+    });
+    expect(unitById(next, "a-base")?.moved).toBe(true);
+    expect(unitById(next, "a-worker")?.moved).toBe(false);
+  });
+
+  it("requires the unlocking structure before building advanced cards", () => {
+    const state = createInitialState();
+    expect(canBuild(state, "a", "a-worker", "factory")).toMatchObject({
+      ok: false,
+      reason: "Requires Barracks",
+    });
+    expect(canBuild(state, "a", "a-worker", "barracks")).toMatchObject({
+      ok: false,
+      reason: "Needs 5◆",
+    });
+
+    const rich = {
+      ...state,
+      stock: { ...state.stock, a: { minerals: 20, gas: 5 } },
+    };
+    const built = buildUnit(rich, "a", "a-worker", "barracks");
+    expect(unitById(built, "a-barracks-1")).toBeDefined();
+
+    // The worker spent its action; ready it again for the next round before
+    // checking the newly unlocked Factory.
+    const rested = {
+      ...built,
+      units: built.units.map((unit) =>
+        unit.id === "a-worker" ? { ...unit, moved: false } : unit,
+      ),
+    };
+    expect(canBuild(rested, "a", "a-worker", "factory").ok).toBe(true);
+  });
+
+  it("ignores a build order for a card the piece cannot make", () => {
+    const state = createInitialState();
+    const next = resolveRound(state, {
+      a: { moves: [], builds: [{ builderId: "a-worker", typeId: "soldier" }] },
+      b: { moves: [], builds: [] },
+    });
+
+    expect(next.units).toHaveLength(state.units.length);
+    expect(next.stock.a).toEqual(state.stock.a);
+  });
+
+  it("resolves construction before movement and refreshes the builder next round", () => {
+    const next = resolveRound(createInitialState(), {
+      a: {
+        moves: [{ unitId: "a-soldier", col: 1, row: 1 }],
+        builds: [{ builderId: "a-worker", typeId: "refinery" }],
+      },
+      b: { moves: [], builds: [] },
+    });
+
+    expect(unitById(next, "a-refinery-1")).toMatchObject({ col: 0, row: 0 });
+    expect(unitById(next, "a-worker")?.moved).toBe(false);
+    expect(unitById(next, "a-soldier")).toMatchObject({ col: 1, row: 1 });
+    expect(next.stock.a.minerals).toBe(STARTING_STOCK.minerals - 3);
+  });
+
+  it("lists build window options for Workers and Bases only", () => {
+    const state = createInitialState();
+    const workerOptions = buildOptions(state, "a", "a-worker");
+
+    expect(workerOptions.map((option) => option.typeId)).toEqual(
+      expect.arrayContaining(["base", "refinery", "barracks", "factory"]),
+    );
+    expect(
+      workerOptions.find((option) => option.typeId === "factory")?.enabled,
+    ).toBe(false);
+    expect(
+      workerOptions.find((option) => option.typeId === "refinery")?.enabled,
+    ).toBe(true);
+
+    expect(
+      buildOptions(state, "a", "a-base").map((option) => option.typeId),
+    ).toEqual(["worker"]);
+    expect(buildOptions(state, "a", "a-soldier")).toEqual([]);
   });
 });
