@@ -3,17 +3,26 @@
  *
  * The board is three hex columns wide and five rows deep. Player A starts on the
  * top edge and Player B on the bottom edge; the left and right edges carry the
- * mineral and gas nodes. Both players plan at the same time: each mobile unit
- * may step to one adjacent hex, then both plans resolve together. Workers
- * standing on a resource node harvest at the end of the round.
+ * mineral and gas nodes. Both players plan at the same time: any number of pieces
+ * from one hex may march together to one adjacent hex, then both plans resolve
+ * together. Allied armies merge, enemy-held hexes become conflicts, and conflicts
+ * are fought out before the next round begins. Workers standing on a resource
+ * node harvest at the end of the round.
  *
  * This is deliberately framework-free so the movement/harvest rules can be
  * tested without React.
  */
 
+import { resolveBattle, type BattleResult, type SurvivingCard } from "./battle";
+import { getDefinition } from "./codex";
+import type { Card } from "./types";
+
 export type Player = "a" | "b";
 export type ResourceType = "minerals" | "gas";
 export type PlayUnitType = "base" | "worker" | "soldier";
+
+/** Planning is the normal round. Battle pauses the round while conflicts resolve. */
+export type PlayPhase = "planning" | "battle";
 
 export interface HexCoord {
   col: number;
@@ -29,6 +38,8 @@ export interface PlayUnit extends HexCoord {
   id: string;
   owner: Player;
   typeId: PlayUnitType;
+  /** Current HP after any battles; defaults to the codex value when absent. */
+  hp?: number;
   /** A unit may make one move per round. */
   moved: boolean;
 }
@@ -51,6 +62,47 @@ export interface Stock {
   gas: number;
 }
 
+/** One allied group marching at a contested hex, grouped by its origin hex. */
+export interface ConflictAttack {
+  player: Player;
+  from: HexCoord;
+  unitIds: string[];
+}
+
+/**
+ * A hex that two players both want at the same time. The attackers stay in their
+ * origin hexes until the battle is resolved; the defender holds the target.
+ */
+export interface Conflict {
+  id: string;
+  target: HexCoord;
+  /** The side treated as the defender. For a clash over an empty hex this is arbitrary. */
+  defender: Player;
+  attacks: ConflictAttack[];
+}
+
+export interface BattleUnitSummary {
+  unitId: string;
+  typeId: PlayUnitType;
+  hp: number;
+}
+
+/** A resolved conflict, kept so the UI can show what happened. */
+export interface BattleReport {
+  conflictId: string;
+  target: HexCoord;
+  defender: Player;
+  attacker: Player;
+  winner: Player | "draw";
+  reason: string;
+  loops: number;
+  startingUnits: Record<Player, number>;
+  survivors: Record<Player, BattleUnitSummary[]>;
+  rounds: BattleResult["rounds"];
+  /** True when the attacking survivors took the contested hex. */
+  occupied: boolean;
+}
+
 export interface PlayState {
   units: PlayUnit[];
   active: Player;
@@ -59,6 +111,11 @@ export interface PlayState {
   log: string[];
   /** Set when a player forfeits the online match. */
   winner: Player | null;
+  phase: PlayPhase;
+  /** Populated while `phase` is "battle"; the borders that should glow. */
+  conflicts: Conflict[];
+  /** Results of the most recent battle phase. */
+  battles: BattleReport[];
 }
 
 /** Everything a player can send during an online match. */
@@ -161,6 +218,31 @@ export function unitById(state: PlayState, id: string): PlayUnit | undefined {
   return state.units.find((unit) => unit.id === id);
 }
 
+/** Current HP, falling back to the codex value for older saved states. */
+export function unitHp(unit: PlayUnit): number {
+  return Math.max(0, unit.hp ?? getDefinition(unit.typeId).hp);
+}
+
+/** True when the hex holds at least one piece from the other side. */
+export function isEnemyOccupied(
+  state: PlayState,
+  player: Player,
+  col: number,
+  row: number,
+): boolean {
+  return unitsAt(state, col, row).some((unit) => unit.owner !== player);
+}
+
+/** Fill in the extra fields added after the first saved games. */
+export function normalizePlayState(state: PlayState): PlayState {
+  return {
+    ...state,
+    phase: state.phase ?? "planning",
+    conflicts: state.conflicts ?? [],
+    battles: state.battles ?? [],
+  };
+}
+
 export function createInitialState(): PlayState {
   return {
     units: [
@@ -179,6 +261,9 @@ export function createInitialState(): PlayState {
     },
     log: ["Click one of your hexes to inspect the pieces there."],
     winner: null,
+    phase: "planning",
+    conflicts: [],
+    battles: [],
   };
 }
 
@@ -192,17 +277,20 @@ export function isAdjacent(from: HexCoord, to: HexCoord): boolean {
   );
 }
 
+/**
+ * A move is legal if the piece is mobile and the hex is adjacent. Occupancy is
+ * no longer a blocker: allied hexes merge and enemy hexes become conflicts.
+ */
 export function canUnitMoveTo(
   state: PlayState,
   unit: PlayUnit,
   col: number,
   row: number,
 ): boolean {
+  void state;
   if (unit.moved || unit.typeId === "base") return false;
   if (!inBounds(col, row)) return false;
-  if (!isAdjacent(unit, { col, row })) return false;
-  // Allied pieces can share a hex; enemy-held hexes stay closed.
-  return unitsAt(state, col, row).every((occupant) => occupant.owner === unit.owner);
+  return isAdjacent(unit, { col, row });
 }
 
 export function canMoveTo(state: PlayState, unit: PlayUnit, col: number, row: number): boolean {
@@ -210,6 +298,10 @@ export function canMoveTo(state: PlayState, unit: PlayUnit, col: number, row: nu
   return canUnitMoveTo(state, unit, col, row);
 }
 
+/**
+ * Move one piece to an adjacent hex without starting a battle. Enemy-held hexes
+ * are an attack, so this helper refuses them; practice uses moveUnits instead.
+ */
 export function moveUnit(
   state: PlayState,
   unitId: string,
@@ -218,6 +310,7 @@ export function moveUnit(
 ): PlayState {
   const unit = unitById(state, unitId);
   if (!unit || !canMoveTo(state, unit, col, row)) return state;
+  if (isEnemyOccupied(state, unit.owner, col, row)) return state;
 
   const message = `${PLAYER_LABEL[unit.owner]} moved ${UNIT_LABEL[unit.typeId]} to ${tileLabel(col, row)}.`;
   return {
@@ -225,7 +318,69 @@ export function moveUnit(
     units: state.units.map((entry) =>
       entry.id === unitId ? { ...entry, col, row, moved: true } : entry,
     ),
-    log: [...state.log, message].slice(-6),
+    phase: "planning",
+    conflicts: [],
+    log: [...state.log, message].slice(-10),
+  };
+}
+
+/**
+ * Hotseat helper: march every listed piece to the same hex. Allied armies merge
+ * freely; if an enemy holds the hex, the battle is fought immediately.
+ */
+export function moveUnits(
+  state: PlayState,
+  unitIds: string[],
+  col: number,
+  row: number,
+): PlayState {
+  if (state.winner || state.phase !== "planning") return state;
+
+  const chosen: PlayUnit[] = [];
+  for (const id of new Set(unitIds)) {
+    const unit = unitById(state, id);
+    if (!unit) continue;
+    if (!canMoveTo(state, unit, col, row)) continue;
+    chosen.push(unit);
+  }
+  const first = chosen[0];
+  if (!first) return state;
+
+  const player = first.owner;
+  const defenders = unitsAt(state, col, row).filter((unit) => unit.owner !== player);
+
+  const leadDefender = defenders[0];
+  if (leadDefender) {
+    const attacks = groupAttacks(chosen);
+    const conflict: Conflict = {
+      id: `conflict-${hexId(col, row)}-${state.turn}`,
+      target: { col, row },
+      defender: leadDefender.owner,
+      attacks,
+    };
+    const outcome = applyConflict(state.units, conflict);
+    return {
+      ...state,
+      units: outcome.units,
+      battles: [outcome.report, ...state.battles].slice(0, 3),
+      log: [...state.log, ...outcome.log].slice(-10),
+    };
+  }
+
+  const names = describeUnits(chosen);
+  return {
+    ...state,
+    units: state.units.map((unit) =>
+      chosen.some((entry) => entry.id === unit.id)
+        ? { ...unit, col, row, moved: true }
+        : unit,
+    ),
+    phase: "planning",
+    conflicts: [],
+    log: [
+      ...state.log,
+      `${PLAYER_LABEL[player]} moved ${names} to ${tileLabel(col, row)}.`,
+    ].slice(-10),
   };
 }
 
@@ -274,7 +429,9 @@ export function endTurn(state: PlayState): PlayState {
     },
     active: next,
     turn: next === "a" ? state.turn + 1 : state.turn,
-    log: [...state.log, message].slice(-6),
+    phase: "planning",
+    conflicts: [],
+    log: [...state.log, message].slice(-10),
   };
 }
 
@@ -305,83 +462,335 @@ function acceptedMoves(
   return accepted;
 }
 
-/**
- * Resolve a full round from both players' plans.
- *
- * Every unit steps once, at the same time. Destinations are checked against the
- * positions at the start of the round, so units cannot chain through each
- * other. Any number of allied pieces may share a hex. If both players pick the
- * same empty hex, every move into it is cancelled. Workers then harvest for
- * their own side and the next round begins.
- */
-export function resolveRound(
-  state: PlayState,
-  submissions: RoundSubmissions,
-): PlayState {
-  if (state.winner) return state;
+function describeUnits(units: PlayUnit[]): string {
+  if (units.length === 0) return "no pieces";
+  const counts = new Map<PlayUnitType, number>();
+  for (const unit of units) {
+    counts.set(unit.typeId, (counts.get(unit.typeId) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([typeId, count]) => `${count} ${UNIT_LABEL[typeId]}${count === 1 ? "" : "s"}`)
+    .join(" + ");
+}
 
+function groupAttacks(units: PlayUnit[]): ConflictAttack[] {
+  const groups = new Map<string, ConflictAttack>();
+  for (const unit of units) {
+    const key = hexId(unit.col, unit.row);
+    const attack = groups.get(key) ?? {
+      player: unit.owner,
+      from: { col: unit.col, row: unit.row },
+      unitIds: [],
+    };
+    attack.unitIds.push(unit.id);
+    groups.set(key, attack);
+  }
+  return [...groups.values()];
+}
+
+interface PlannedRound {
+  units: PlayUnit[];
+  conflicts: Conflict[];
+  log: string[];
+}
+
+/**
+ * Apply every uncontested move, then hold attacking armies in place at any hex
+ * that would end up with both players' pieces. The final positions are the start
+ * of the battle phase.
+ */
+function planRound(state: PlayState, submissions: RoundSubmissions): PlannedRound {
   const accepted = [
     ...acceptedMoves(state, "a", submissions.a),
     ...acceptedMoves(state, "b", submissions.b),
   ];
+  const movesByUnit = new Map(accepted.map((entry) => [entry.unit.id, entry]));
 
-  const byTarget = new Map<string, AcceptedMove[]>();
+  const positions = new Map<string, HexCoord>();
+  for (const unit of state.units) {
+    positions.set(unit.id, { col: unit.col, row: unit.row });
+  }
   for (const entry of accepted) {
-    const target = hexId(entry.move.col, entry.move.row);
-    const group = byTarget.get(target);
-    if (group) group.push(entry);
-    else byTarget.set(target, [entry]);
+    positions.set(entry.unit.id, { col: entry.move.col, row: entry.move.row });
   }
 
-  const contested = accepted.filter((entry) => {
-    const group = byTarget.get(hexId(entry.move.col, entry.move.row)) ?? [];
-    return group.some((other) => other.player !== entry.player);
-  });
-  const moving = accepted.filter((entry) => !contested.includes(entry));
-  const movingByUnit = new Map(moving.map((entry) => [entry.unit.id, entry]));
+  const held = new Set<string>();
+  const conflictsByHex = new Map<
+    string,
+    { target: HexCoord; defender: Player; attacks: Map<string, ConflictAttack> }
+  >();
+
+  // Holding an attacker can create a new clash at its origin, so repeat until
+  // every clash has been found. Each piece can be held at most once.
+  for (let pass = 0; pass <= state.units.length; pass += 1) {
+    const groups = new Map<string, PlayUnit[]>();
+    for (const unit of state.units) {
+      if (unitHp(unit) <= 0) continue;
+      const position = positions.get(unit.id) ?? { col: unit.col, row: unit.row };
+      const key = hexId(position.col, position.row);
+      const group = groups.get(key);
+      if (group) group.push(unit);
+      else groups.set(key, [unit]);
+    }
+
+    let changed = false;
+
+    for (const [key, group] of groups) {
+      const owners = new Set(group.map((unit) => unit.owner));
+      if (owners.size < 2) continue;
+
+      const lead = group[0];
+      if (!lead) continue;
+      const position = positions.get(lead.id);
+      if (!position) continue;
+      const target = { col: position.col, row: position.row };
+      const defender = chooseDefender(state, target, group);
+      const attacker = otherPlayer(defender);
+
+      const arrivals = group.filter(
+        (unit) =>
+          unit.owner === attacker &&
+          movesByUnit.has(unit.id) &&
+          !held.has(unit.id),
+      );
+      if (arrivals.length === 0) continue;
+
+      const conflict = conflictsByHex.get(key) ?? {
+        target,
+        defender,
+        attacks: new Map<string, ConflictAttack>(),
+      };
+
+      for (const unit of arrivals) {
+        held.add(unit.id);
+        const origin = { col: unit.col, row: unit.row };
+        positions.set(unit.id, origin);
+        const fromKey = hexId(origin.col, origin.row);
+        const attack = conflict.attacks.get(fromKey) ?? {
+          player: attacker,
+          from: origin,
+          unitIds: [],
+        };
+        attack.unitIds.push(unit.id);
+        conflict.attacks.set(fromKey, attack);
+      }
+
+      conflictsByHex.set(key, conflict);
+      changed = true;
+    }
+
+    if (!changed) break;
+  }
+
+  const conflicts: Conflict[] = [...conflictsByHex.values()].map((entry) => ({
+    id: `conflict-${hexId(entry.target.col, entry.target.row)}-${state.turn}`,
+    target: entry.target,
+    defender: entry.defender,
+    attacks: [...entry.attacks.values()],
+  }));
 
   const units = state.units.map((unit) => {
-    const entry = movingByUnit.get(unit.id);
-    return entry
-      ? { ...unit, col: entry.move.col, row: entry.move.row, moved: false }
-      : { ...unit, moved: false };
+    const position = positions.get(unit.id) ?? { col: unit.col, row: unit.row };
+    return { ...unit, col: position.col, row: position.row, moved: false };
   });
 
-  const movedState: PlayState = { ...state, units };
+  const log: string[] = [];
+  for (const player of ["a", "b"] as Player[]) {
+    const moves = accepted.filter(
+      (entry) => entry.player === player && !held.has(entry.unit.id),
+    );
+    if (moves.length === 0) continue;
+    const summary = moves
+      .map(
+        (entry) =>
+          `${UNIT_LABEL[entry.unit.typeId]} ${tileLabel(entry.unit.col, entry.unit.row)}→${tileLabel(entry.move.col, entry.move.row)}`,
+      )
+      .join(", ");
+    log.push(`${PLAYER_LABEL[player]} moved ${summary}.`);
+  }
+
+  for (const conflict of conflicts) {
+    const attacker = conflict.attacks[0]?.player ?? otherPlayer(conflict.defender);
+    log.push(
+      `Conflict at ${tileLabel(conflict.target.col, conflict.target.row)}: ${PLAYER_LABEL[attacker]} attacks ${PLAYER_LABEL[conflict.defender]}.`,
+    );
+  }
+
+  return { units, conflicts, log };
+}
+
+/** The side that already stood on the hex defends it; an empty clash is arbitrary. */
+function chooseDefender(
+  state: PlayState,
+  target: HexCoord,
+  group: PlayUnit[],
+): Player {
+  const stayed = group.find(
+    (unit) => unit.col === target.col && unit.row === target.row,
+  );
+  if (stayed) return stayed.owner;
+
+  const started = state.units.find(
+    (unit) => unit.col === target.col && unit.row === target.row,
+  );
+  if (started) return started.owner;
+
+  return "b";
+}
+
+function toCard(unit: PlayUnit): Card {
+  return {
+    uid: unit.id,
+    typeId: unit.typeId,
+    hp: unitHp(unit),
+    retreating: false,
+  };
+}
+
+function summarizeSurvivors(cards: SurvivingCard[]): BattleUnitSummary[] {
+  return cards.map((card) => ({
+    unitId: card.uid,
+    typeId: card.typeId as PlayUnitType,
+    hp: card.hp,
+  }));
+}
+
+interface ConflictOutcome {
+  units: PlayUnit[];
+  report: BattleReport;
+  log: string[];
+}
+
+/** Fight one conflict and return the surviving board plus a report. */
+function applyConflict(current: PlayUnit[], conflict: Conflict): ConflictOutcome {
+  const attacker = conflict.attacks[0]?.player ?? otherPlayer(conflict.defender);
+  const attackerIds = new Set(conflict.attacks.flatMap((attack) => attack.unitIds));
+
+  const defenders = current.filter(
+    (unit) =>
+      unit.owner === conflict.defender &&
+      unit.col === conflict.target.col &&
+      unit.row === conflict.target.row &&
+      unitHp(unit) > 0,
+  );
+  const attackers = current.filter(
+    (unit) => unit.owner === attacker && attackerIds.has(unit.id) && unitHp(unit) > 0,
+  );
+
+  const sideUnits: Record<Player, PlayUnit[]> = { a: [], b: [] };
+  for (const unit of [...defenders, ...attackers]) {
+    sideUnits[unit.owner].push(unit);
+  }
+
+  const targetLabel = tileLabel(conflict.target.col, conflict.target.row);
+  const result = resolveBattle({
+    a: {
+      label: `${PLAYER_LABEL.a} at ${targetLabel}`,
+      cards: sideUnits.a.map(toCard),
+      hasRetreatHex: false,
+    },
+    b: {
+      label: `${PLAYER_LABEL.b} at ${targetLabel}`,
+      cards: sideUnits.b.map(toCard),
+      hasRetreatHex: false,
+    },
+  });
+
+  const survivorCards: Record<Player, Map<string, SurvivingCard>> = {
+    a: new Map(result.survivors.a.map((card) => [card.uid, card])),
+    b: new Map(result.survivors.b.map((card) => [card.uid, card])),
+  };
+
+  const defenderSurvivors = defenders.filter((unit) =>
+    survivorCards[conflict.defender].has(unit.id),
+  );
+  const defenderHasStructures = defenderSurvivors.some(
+    (unit) => getDefinition(unit.typeId).kind === "structure",
+  );
+
+  const occupied =
+    result.winner === attacker && !defenderHasStructures;
+  const participants = new Set(
+    [...defenders, ...attackers].map((unit) => unit.id),
+  );
+
+  const units: PlayUnit[] = [];
+  for (const unit of current) {
+    if (!participants.has(unit.id)) {
+      units.push(unit);
+      continue;
+    }
+    const survivor = survivorCards[unit.owner].get(unit.id);
+    if (!survivor) continue;
+
+    const next: PlayUnit = { ...unit, hp: survivor.hp };
+    if (occupied && unit.owner === attacker) {
+      next.col = conflict.target.col;
+      next.row = conflict.target.row;
+    }
+    units.push(next);
+  }
+
+  const report: BattleReport = {
+    conflictId: conflict.id,
+    target: conflict.target,
+    defender: conflict.defender,
+    attacker,
+    winner: result.winner,
+    reason: result.reason,
+    loops: result.rounds.filter((round) => round.index > 0).length,
+    startingUnits: result.startingUnits,
+    survivors: {
+      a: summarizeSurvivors(result.survivors.a),
+      b: summarizeSurvivors(result.survivors.b),
+    },
+    rounds: result.rounds,
+    occupied,
+  };
+
+  const log: string[] = [
+    `Battle at ${targetLabel}: ${PLAYER_LABEL[attacker]} ${describeUnits(attackers)} vs ${PLAYER_LABEL[conflict.defender]} ${describeUnits(defenders)}.`,
+  ];
+  log.push(
+    result.winner === "draw"
+      ? `The battle at ${targetLabel} ended in a draw.`
+      : `${PLAYER_LABEL[result.winner]} won the battle at ${targetLabel} — ${result.reason.toLowerCase()}`,
+  );
+  if (occupied) {
+    log.push(`${PLAYER_LABEL[attacker]} took ${targetLabel}.`);
+  } else if (defenderHasStructures) {
+    log.push(
+      `${PLAYER_LABEL[conflict.defender]} still holds ${targetLabel} with a structure.`,
+    );
+  }
+
+  return { units, report, log };
+}
+
+function finishRound(
+  state: PlayState,
+  units: PlayUnit[],
+  battles: BattleReport[],
+  logLines: string[],
+): PlayState {
+  const movedState: PlayState = {
+    ...state,
+    units,
+    phase: "planning",
+    conflicts: [],
+    battles,
+  };
+
   const gainedA = harvestFor(movedState, "a");
   const gainedB = harvestFor(movedState, "b");
 
-  const log = [...state.log];
-  if (moving.length === 0) {
-    log.push("Both sides held position.");
-  } else {
-    for (const player of ["a", "b"] as Player[]) {
-      const moves = moving.filter((entry) => entry.player === player);
-      if (moves.length === 0) continue;
-      const summary = moves
-        .map(
-          (entry) =>
-            `${UNIT_LABEL[entry.unit.typeId]} ${tileLabel(entry.unit.col, entry.unit.row)}→${tileLabel(entry.move.col, entry.move.row)}`,
-        )
-        .join(", ");
-      log.push(`${PLAYER_LABEL[player]} moved ${summary}.`);
-    }
-  }
-
-  if (contested.length > 0) {
-    const targets = Array.from(
-      new Set(contested.map((entry) => tileLabel(entry.move.col, entry.move.row))),
-    );
-    log.push(`Contested ${targets.join(", ")}: both sides' moves cancelled.`);
-  }
-
+  const log = [...state.log, ...logLines];
   for (const player of ["a", "b"] as Player[]) {
     const gained = player === "a" ? gainedA : gainedB;
     if (gained.minerals > 0 || gained.gas > 0) {
       log.push(`${PLAYER_LABEL[player]} ${describeHarvest(gained)}.`);
     }
   }
-
   log.push(`Round ${state.turn + 1} begins.`);
 
   return {
@@ -397,6 +806,60 @@ export function resolveRound(
         gas: state.stock.b.gas + gainedB.gas,
       },
     },
-    log: log.slice(-6),
+    log: log.slice(-12),
   };
+}
+
+/**
+ * Resolve a full round from both players' plans.
+ *
+ * Every piece steps at most once. Allied armies merge, enemy-held hexes become
+ * conflicts, and an empty hex both players enter is a head-on clash. Uncontested
+ * moves happen immediately; if any conflicts remain the round pauses in the
+ * battle phase until resolveBattles is called. If there are no conflicts the
+ * round finishes right away: Workers harvest and the next round begins.
+ */
+export function resolveRound(
+  state: PlayState,
+  submissions: RoundSubmissions,
+): PlayState {
+  if (state.winner || state.phase === "battle") return state;
+
+  const plan = planRound(state, submissions);
+  if (plan.conflicts.length > 0) {
+    return {
+      ...state,
+      units: plan.units,
+      phase: "battle",
+      conflicts: plan.conflicts,
+      battles: [],
+      log: [...state.log, ...plan.log].slice(-12),
+    };
+  }
+
+  return finishRound(state, plan.units, [], plan.log);
+}
+
+/**
+ * Resolve every conflict in the current battle phase, then finish the round.
+ * The attacking survivors take a hex only when the defender is wiped out;
+ * surviving structures keep the hex, exactly like the tabletop battle phase.
+ */
+export function resolveBattles(state: PlayState): PlayState {
+  if (state.winner || state.phase !== "battle" || state.conflicts.length === 0) {
+    return state;
+  }
+
+  let units = state.units.map((unit) => ({ ...unit }));
+  const battles: BattleReport[] = [];
+  const log: string[] = [];
+
+  for (const conflict of state.conflicts) {
+    const outcome = applyConflict(units, conflict);
+    units = outcome.units;
+    battles.push(outcome.report);
+    log.push(...outcome.log);
+  }
+
+  return finishRound(state, units, battles, log);
 }

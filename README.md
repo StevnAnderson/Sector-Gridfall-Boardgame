@@ -64,16 +64,22 @@ matching screen gives way to the starter map: three hex columns wide and five ro
 deep, with Player A on the top edge and Player B on the bottom edge. Each edge
 carries a mineral node and a gas node. An occupied hex shows a dot in its owner's
 colour rather than every piece. Click one of your hexes to list everything stacked
-there in the hex panel on the left, pick a Worker or Soldier, then click a
-highlighted neighbour to queue its move. Enemy hexes only report **Occupied by
-enemy** and reveal nothing inside. Any number of allied pieces may share a hex;
-enemy-held hexes cannot be entered. Both players plan at the same time, then click
-**Submit**. When both sides have submitted, every unit moves at once. Each mobile
-unit makes one move per round and Bases never move. If both players pick the same
-empty hex, both sides' moves there are cancelled. Every Worker standing on a node
-then harvests one of that resource, and the next round begins. Resources are the
-score. **Forfeit** declares the opponent the winner and returns both players to
-matching. Combat, building and spending come later.
+there in the hex panel on the left, select any number of Workers or Soldiers, then
+click a highlighted neighbour to queue the whole group's move. Allied hexes are
+valid destinations, so moving one army into another merges them; two allied groups
+can also meet on the same empty hex. Enemy-held hexes are valid destinations too:
+if the enemy vacates in the same round, your army moves in, but if the enemy stays
+the border turns red and the round pauses for the battle phase. Bases never move.
+
+Both players plan at the same time, then click **Submit**. When both sides have
+submitted, uncontested moves resolve, then every conflict is fought with the same
+battle engine as the Battle Lab. The host resolves the battle phase; the guest
+sees the conflict borders and waits. Damage persists between rounds, and a
+surviving defender structure keeps its hex even when every defending unit is gone.
+After the battles, every Worker standing on a node harvests one of that resource
+and the next round begins. Resources are the score. **Forfeit** declares the
+opponent the winner and returns both players to matching. Building and spending
+come later.
 
 Host and guest connect directly over WebRTC (signalled by the free PeerJS broker).
 Tabs in the same browser also pair over `BroadcastChannel`, so a code works offline
@@ -88,8 +94,8 @@ src/game/types.ts       cards, costs, range bands
 src/game/codex.ts       stat blocks transcribed from BoardGame.docx
 src/game/battle.ts      the battle rules engine (framework-free, unit tested)
 src/game/battle.test.ts damage loop, targeting, outnumber and per-round choices
-src/game/play.ts        starter-map movement, stacking, harvesting and rounds
-src/game/play.test.ts   map shape, neighbours, movement, harvesting and round resolution
+src/game/play.ts        starter-map moves, conflicts, battle hand-off and harvesting
+src/game/play.test.ts   map shape, grouped moves, conflicts, battles, harvesting and round resolution
 src/lib/match.ts        code matchmaking: PeerJS plus BroadcastChannel fallback
 src/game/codex.test.ts    stat blocks and printed card counts
 src/components/         Codex, Battle Lab, Turn Flow and Play views
@@ -123,9 +129,10 @@ Everything else the engine had to assume is listed in
 
 The Battle Lab resolves **one army per side**, which is the atomic battle from
 the rules. The Play tab is a deliberately tiny two-player skirmish: a fixed 3×5
-map, unlimited allied stacking on a hex, one queued move per mobile unit per
-round, simultaneous resolution and Worker harvesting. Multi-army conflict chains,
-full map adjacency, maneuver tokens, escorting and production timers are not
-modelled yet. See the roadmap in the open questions doc.
+map, unlimited allied stacking on a hex, grouped moves from one hex per round,
+simultaneous resolution, conflict detection and an auto-resolved battle phase
+before Worker harvesting. Conflict chains that span several hexes, the full map,
+maneuver tokens, escorting and production timers are not modelled yet. See the
+roadmap in the open questions doc.
 
 `BoardGame.docx` remains the source of truth for the rules.

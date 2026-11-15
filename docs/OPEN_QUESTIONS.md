@@ -56,7 +56,8 @@ rules, so it can be split across the line and can hit structures in the way.
 larger side has at least double the smaller side's units. Ties do nothing.
 
 **Structures-only loop.** Exactly one unopposed loop (long, mid, melee), then the
-battle ends. Surviving structures do not hold the hex.
+battle ends. On the Play map a surviving defender structure keeps the contested
+hex even when every defending unit is gone.
 
 **Both sides reduced to structures.** Treated as a draw; the defender keeps the
 contested hex, consistent with "the attacking force stays on their adjacent hex".
@@ -79,18 +80,31 @@ regardless of band; long range does not shoot two hexes away.
 **Play mode is a starter map, not the full game.** The Play tab uses a fixed 3×5
 odd-r hex grid with Player A on the top edge and Player B on the bottom edge, and
 one mineral node plus one gas node on each side edge. Any number of pieces from
-one side may stack on a hex, but enemy-held hexes cannot be entered. An occupied
-hex shows only a dot in its owner's colour; clicking one of your own hexes lists
-every piece in the left-hand hex panel, while clicking an enemy hex reveals only
-"Occupied by enemy". Rounds are simultaneous: each player queues at most one
-adjacent destination per mobile unit (Bases never move) and clicks Submit. Once
-both plans are in, they resolve together against the start-of-round positions. If
-both players target the same empty hex, both sides' moves into it are cancelled.
-Each Worker on a resource node then harvests one of that resource for its own side,
-and the round advances. Combat, building and spending are intentionally absent;
-resources are just a running score. The board is shared by two paired players: the
-host is authoritative, collects both submissions and resolves the round, while the
-guest sends its plan. Either side can forfeit. Matching codes are 5 characters.
+one side may stack on a hex. An occupied hex shows only a dot in its owner's
+colour; clicking one of your own hexes lists every piece in the left-hand hex
+panel, while an enemy hex reports only "Occupied by enemy" during planning.
+Conflict reveals the defending garrison.
+
+Rounds are simultaneous: from one hex, select any number of mobile pieces (Bases
+never move) and queue them to the same adjacent destination. Allied hexes and
+hexes targeted by other allied moves are valid destinations, so armies merge
+whether one moves into another or several meet on an empty hex. Enemy-held hexes
+are valid too. Resolution is staged: uncontested arrivals move first; any hex
+that would then hold both sides in the same round becomes a conflict, the
+attacking groups stay in their origin hexes, and the round pauses in the battle
+phase. The host resolves each conflict with the battle engine (no retreats,
+automatic targeting), writes surviving HP back to the map, and the attacking
+survivors take the hex only when every defending unit is destroyed; a surviving
+defender structure keeps the hex. A head-on clash over an empty hex arbitrarily
+treats Player B as the defender. After the battle phase, each Worker on a
+resource node harvests one of that resource for its own side, and the round
+advances. Online conflict resolution is host-authoritative; practice resolves an
+attack immediately on click instead of planning it simultaneously.
+
+Combat, building and spending are otherwise intentionally absent; resources are
+just a running score. The board is shared by two paired players: the host collects
+both submissions and resolves the round, while the guest sends its plan. Either
+side can forfeit. Matching codes are 5 characters.
 
 **Real-time transport is peer-to-peer.** Cross-device games use WebRTC with the
 public PeerJS broker for the initial handshake; no game state touches a server.
@@ -109,9 +123,10 @@ play would still need a server.
 armies. The Play starter map now lets any number of allied pieces share a hex as a
 deliberate simplification; how stacking should work on the real map is still open.
 
-**Randomness.** Conflicts and battles resolve in random order. A physical game uses
-a die; an app needs a seed both players can verify. Not modelled, because the Battle
-Lab resolves a single fight on demand.
+**Randomness.** Conflicts and battles resolve in random order. A physical game
+uses a die; an app needs a seed both players can verify. The Play map currently
+resolves conflicts in a deterministic target order rather than rolling, and the
+Battle Lab resolves a single fight on demand.
 
 **Worker combat.** Workers deal 1 melee damage and are non-threatening. That is a
 real, interesting choice on the battlefield — worth confirming it is intended rather
@@ -123,11 +138,12 @@ Ordered by how much each adds to a playtest:
 
 1. **Batch simulation** — run a matchup 1,000 times and report win rates. Fastest
    route to balancing costs without table time.
-2. **Multi-army battles** — conflict chains, damage split across adjacent armies,
-   outnumber across whole teams.
+2. **Multi-hex battles** — conflict chains across several hexes, damage split
+   across adjacent armies, outnumber across whole teams.
 3. **Map layer** — grow the Play map into the real thing: variable boards, armies
-   as stacks, maneuver tokens, conflict detection and battle hand-off. The starter
-   3×5 map and its movement/harvest rules are the first slice.
+   as stacks, maneuver tokens, construction and the full battle hand-off. The
+   starter 3×5 map, grouped moves, conflict detection and the battle phase are the
+   first slice.
 4. **Async play** — server-backed, resumable turns so a game can survive both
    players closing their tabs. Live play is already peer-to-peer; persistence and
    matchmaking without a shared code would need a backend.

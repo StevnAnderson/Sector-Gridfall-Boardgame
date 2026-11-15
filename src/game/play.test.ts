@@ -10,12 +10,17 @@ import {
   harvestFor,
   isAdjacent,
   moveUnit,
+  moveUnits,
   neighbors,
+  normalizePlayState,
+  resolveBattles,
   resolveRound,
   tileAt,
   unitAt,
   unitById,
+  unitHp,
   unitsAt,
+  type PlayState,
 } from "./play";
 
 describe("starter map", () => {
@@ -81,7 +86,7 @@ describe("movement", () => {
     expect(moveUnit(moved, worker.id, 0, 2)).toBe(moved);
   });
 
-  it("cannot move bases or enemy units, and keeps enemy-held hexes closed", () => {
+  it("cannot move bases or enemy units, but enemy-held hexes are attack targets", () => {
     const state = createInitialState();
     const base = unitById(state, "a-base");
     const enemy = unitById(state, "b-worker");
@@ -90,7 +95,7 @@ describe("movement", () => {
     expect(canMoveTo(state, base, 1, 1)).toBe(false);
     expect(canMoveTo(state, enemy, 2, 3)).toBe(false);
 
-    // Put Player B's Worker next to Player A's Worker and try to step in.
+    // Put Player B's Worker next to Player A's Worker: the hex is a legal attack.
     const blockaded = {
       ...state,
       units: state.units.map((unit) =>
@@ -99,7 +104,7 @@ describe("movement", () => {
     };
     const worker = unitById(blockaded, "a-worker");
     if (!worker) throw new Error("missing worker");
-    expect(canUnitMoveTo(blockaded, worker, 0, 1)).toBe(false);
+    expect(canUnitMoveTo(blockaded, worker, 0, 1)).toBe(true);
   });
 
   it("lets allied pieces stack on the same hex", () => {
@@ -114,6 +119,42 @@ describe("movement", () => {
       "a-base",
       "a-soldier",
     ]);
+  });
+
+  it("lets several selected pieces march together to one hex", () => {
+    const state = createInitialState();
+    const units = state.units.map((unit) => {
+      if (unit.id === "a-worker") return { ...unit, col: 0, row: 1 };
+      if (unit.id === "a-soldier") return { ...unit, col: 2, row: 1 };
+      return unit;
+    });
+    const massed = { ...state, units };
+
+    const moved = moveUnits(massed, ["a-worker", "a-soldier"], 1, 1);
+
+    expect(unitsAt(moved, 1, 1).map((unit) => unit.id).sort()).toEqual([
+      "a-soldier",
+      "a-worker",
+    ]);
+    expect(moved.units.filter((unit) => unit.moved)).toHaveLength(2);
+  });
+
+  it("fights immediately when a practice move enters an enemy-held hex", () => {
+    const state = createInitialState();
+    const units = state.units.map((unit) => {
+      if (unit.id === "a-soldier") return { ...unit, col: 1, row: 2 };
+      if (unit.id === "b-worker") return { ...unit, col: 1, row: 3 };
+      return unit;
+    });
+
+    const moved = moveUnits({ ...state, units }, ["a-soldier"], 1, 3);
+
+    expect(unitById(moved, "b-worker")).toBeUndefined();
+    const soldier = unitById(moved, "a-soldier");
+    expect(soldier).toMatchObject({ col: 1, row: 3 });
+    expect(soldier && unitHp(soldier)).toBe(2);
+    expect(moved.battles).toHaveLength(1);
+    expect(moved.battles[0]).toMatchObject({ target: { col: 1, row: 3 }, occupied: true });
   });
 
   it("cannot move to a non-adjacent hex", () => {
@@ -259,7 +300,7 @@ describe("simultaneous rounds", () => {
     expect(next.turn).toBe(2);
   });
 
-  it("cancels both moves when the players contest the same hex", () => {
+  it("creates a conflict when both players enter the same empty hex", () => {
     const state = createInitialState();
     const units = state.units.map((unit) => {
       if (unit.id === "a-worker") return { ...unit, col: 1, row: 2 };
@@ -275,9 +316,26 @@ describe("simultaneous rounds", () => {
       },
     );
 
+    expect(next.phase).toBe("battle");
+    expect(next.conflicts).toHaveLength(1);
+    expect(next.conflicts[0]).toMatchObject({
+      target: { col: 2, row: 2 },
+      defender: "b",
+    });
+    // The attacker waits in its origin hex; the defender already stands on the target.
     expect(unitById(next, "a-worker")).toMatchObject({ col: 1, row: 2 });
-    expect(unitById(next, "b-worker")).toMatchObject({ col: 2, row: 3 });
-    expect(next.log.some((line) => line.includes("Contested"))).toBe(true);
+    expect(unitById(next, "b-worker")).toMatchObject({ col: 2, row: 2 });
+
+    const resolved = resolveBattles(next);
+    expect(resolved.phase).toBe("planning");
+    expect(resolved.conflicts).toHaveLength(0);
+    expect(resolved.battles).toHaveLength(1);
+    expect(resolved.battles[0]?.winner).toBe("draw");
+    expect(resolved.battles[0]?.occupied).toBe(false);
+    // Two Workers meeting head-on trade one damage each and both die.
+    expect(unitById(resolved, "a-worker")).toBeUndefined();
+    expect(unitById(resolved, "b-worker")).toBeUndefined();
+    expect(resolved.turn).toBe(2);
   });
 
   it("advances the round when both sides hold position", () => {
@@ -288,5 +346,148 @@ describe("simultaneous rounds", () => {
     expect(next.turn).toBe(2);
     expect(next.units).toEqual(state.units);
     expect(next.stock).toEqual(state.stock);
+  });
+});
+
+describe("conflict and battle phase", () => {
+  it("moves into an enemy-held hex when the enemy vacates it", () => {
+    const state = createInitialState();
+    const units = state.units.map((unit) => {
+      if (unit.id === "a-soldier") return { ...unit, col: 1, row: 2 };
+      if (unit.id === "b-worker") return { ...unit, col: 1, row: 3 };
+      return unit;
+    });
+
+    const next = resolveRound(
+      { ...state, units },
+      {
+        a: [{ unitId: "a-soldier", col: 1, row: 3 }],
+        b: [{ unitId: "b-worker", col: 2, row: 3 }],
+      },
+    );
+
+    expect(next.phase).toBe("planning");
+    expect(next.conflicts).toHaveLength(0);
+    expect(unitById(next, "a-soldier")).toMatchObject({ col: 1, row: 3 });
+    expect(unitById(next, "b-worker")).toMatchObject({ col: 2, row: 3 });
+    expect(next.turn).toBe(2);
+  });
+
+  it("holds an attack when the enemy stays, then resolves the battle", () => {
+    const state = createInitialState();
+    const units = state.units.map((unit) => {
+      if (unit.id === "a-soldier") return { ...unit, col: 1, row: 2 };
+      if (unit.id === "b-worker") return { ...unit, col: 1, row: 3 };
+      return unit;
+    });
+
+    const next = resolveRound(
+      { ...state, units },
+      { a: [{ unitId: "a-soldier", col: 1, row: 3 }], b: [] },
+    );
+
+    expect(next.phase).toBe("battle");
+    expect(next.conflicts).toHaveLength(1);
+    expect(next.conflicts[0]).toMatchObject({
+      target: { col: 1, row: 3 },
+      defender: "b",
+      attacks: [{ player: "a", unitIds: ["a-soldier"] }],
+    });
+    expect(unitById(next, "a-soldier")).toMatchObject({ col: 1, row: 2 });
+    expect(unitById(next, "b-worker")).toMatchObject({ col: 1, row: 3 });
+    // The round is paused until the battle phase is resolved.
+    expect(resolveRound(next, { a: [], b: [] })).toBe(next);
+
+    const resolved = resolveBattles(next);
+
+    expect(resolved.phase).toBe("planning");
+    expect(resolved.conflicts).toHaveLength(0);
+    expect(unitById(resolved, "b-worker")).toBeUndefined();
+    const soldier = unitById(resolved, "a-soldier");
+    expect(soldier).toMatchObject({ col: 1, row: 3 });
+    // Soldier (3 HP) takes one damage from the Worker and holds the hex with 2 HP.
+    expect(soldier && unitHp(soldier)).toBe(2);
+    expect(resolved.battles[0]).toMatchObject({
+      winner: "a",
+      occupied: true,
+      target: { col: 1, row: 3 },
+    });
+    expect(resolved.turn).toBe(2);
+  });
+
+  it("merges allied groups attacking the same hex into one battle", () => {
+    const state = createInitialState();
+    const units = state.units.map((unit) => {
+      if (unit.id === "a-soldier") return { ...unit, col: 1, row: 2 };
+      if (unit.id === "a-worker") return { ...unit, col: 0, row: 3 };
+      if (unit.id === "b-worker") return { ...unit, col: 1, row: 3 };
+      return unit;
+    });
+
+    const next = resolveRound(
+      { ...state, units },
+      {
+        a: [
+          { unitId: "a-soldier", col: 1, row: 3 },
+          { unitId: "a-worker", col: 1, row: 3 },
+        ],
+        b: [],
+      },
+    );
+
+    expect(next.phase).toBe("battle");
+    expect(next.conflicts).toHaveLength(1);
+    const attacks = next.conflicts[0]?.attacks ?? [];
+    expect(attacks).toHaveLength(2);
+    expect(attacks.flatMap((attack) => attack.unitIds).sort()).toEqual([
+      "a-soldier",
+      "a-worker",
+    ]);
+
+    const resolved = resolveBattles(next);
+    expect(resolved.battles[0]?.winner).toBe("a");
+    expect(resolved.battles[0]?.occupied).toBe(true);
+    expect(unitById(resolved, "b-worker")).toBeUndefined();
+
+    const survivors = unitsAt(resolved, 1, 3);
+    expect(survivors.length).toBeGreaterThan(0);
+    expect(survivors.every((unit) => unit.owner === "a")).toBe(true);
+  });
+
+  it("keeps a surviving defender structure on the contested hex", () => {
+    const state = createInitialState();
+    const units = state.units.map((unit) => {
+      if (unit.id === "a-soldier") return { ...unit, col: 1, row: 1 };
+      if (unit.id === "b-base") return { ...unit, col: 1, row: 2 };
+      return unit;
+    });
+
+    const next = resolveRound(
+      { ...state, units },
+      { a: [{ unitId: "a-soldier", col: 1, row: 2 }], b: [] },
+    );
+
+    expect(next.phase).toBe("battle");
+
+    const resolved = resolveBattles(next);
+    expect(resolved.battles[0]?.winner).toBe("a");
+    // A Base is a structure: even with every unit gone it keeps the hex.
+    expect(resolved.battles[0]?.occupied).toBe(false);
+    const base = unitById(resolved, "b-base");
+    expect(base).toMatchObject({ col: 1, row: 2 });
+  });
+
+  it("backfills phase fields on states saved before battles existed", () => {
+    const state = createInitialState();
+    const legacy = { ...state } as Partial<PlayState>;
+    delete legacy.phase;
+    delete legacy.conflicts;
+    delete legacy.battles;
+
+    const normalized = normalizePlayState(legacy as PlayState);
+
+    expect(normalized.phase).toBe("planning");
+    expect(normalized.conflicts).toEqual([]);
+    expect(normalized.battles).toEqual([]);
   });
 });

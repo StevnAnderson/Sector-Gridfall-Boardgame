@@ -11,12 +11,17 @@ import {
   createInitialState,
   endTurn,
   harvestFor,
-  moveUnit,
+  moveUnits,
+  normalizePlayState,
   otherPlayer,
+  resolveBattles,
   resolveRound,
   tileLabel,
   unitById,
+  unitHp,
   unitsAt,
+  type BattleReport,
+  type Conflict,
   type MapTile,
   type PlayMove,
   type PlayState,
@@ -56,6 +61,47 @@ function stockSummary(gained: { minerals: number; gas: number }): string {
     parts.push(`${gained.gas} gas`);
   }
   return parts.length > 0 ? parts.join(" + ") : "nothing";
+}
+
+function hexCenter(col: number, row: number): { x: number; y: number } {
+  return {
+    x: col * HEX_W + (row % 2 === 1 ? HEX_W / 2 : 0) + HEX_W / 2,
+    y: row * ROW_STEP + HEX_H / 2,
+  };
+}
+
+/** Selection is limited to pieces standing on one hex so they can march together. */
+function toggleSelectedIds(
+  state: PlayState,
+  current: string[],
+  unitId: string,
+): string[] {
+  const unit = unitById(state, unitId);
+  if (!unit) return current;
+
+  const otherHex = current.some((id) => {
+    const other = unitById(state, id);
+    return other && (other.col !== unit.col || other.row !== unit.row);
+  });
+  if (otherHex) return [unitId];
+
+  return current.includes(unitId)
+    ? current.filter((id) => id !== unitId)
+    : [...current, unitId];
+}
+
+function unitGroupLabel(state: PlayState, unitIds: string[]): string {
+  const counts = new Map<string, number>();
+  for (const id of unitIds) {
+    const unit = unitById(state, id);
+    if (!unit) continue;
+    const name = UNIT_LABEL[unit.typeId];
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  if (counts.size === 0) return "no pieces";
+  return [...counts.entries()]
+    .map(([name, count]) => `${count} ${name}${count === 1 ? "" : "s"}`)
+    .join(" + ");
 }
 
 type PlayMode = "starter" | ChessVariantId;
@@ -141,6 +187,18 @@ function MatchFlow({
     }
 
     handle.send({ kind: "action", action: { type: "submit", moves } });
+  };
+
+  /** Host-only: finish the battle phase, then broadcast the next round. */
+  const resolveBattlePhase = () => {
+    const handle = matchRef.current;
+    const current = stateRef.current;
+    if (!handle || handle.role !== "host") return;
+    if (!current || current.phase !== "battle") return;
+
+    const next = resolveBattles(current);
+    rememberState(next);
+    handle.send({ kind: "state", state: next });
   };
 
   const finish = (reason: string, leaveDelay = 0) => {
@@ -259,6 +317,7 @@ function MatchFlow({
         state={state}
         opponentReady={opponentReady}
         onSubmit={submitMoves}
+        onResolveBattles={resolveBattlePhase}
         onFinish={finish}
       />
     );
@@ -367,22 +426,27 @@ function OnlineStarter({
   state,
   opponentReady,
   onSubmit,
+  onResolveBattles,
   onFinish,
 }: {
   match: MatchHandle;
   state: PlayState;
   opponentReady: boolean;
   onSubmit: (moves: PlayMove[]) => void;
+  onResolveBattles: () => void;
   onFinish: (reason: string, leaveDelay?: number) => void;
 }) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [inspectedId, setInspectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<PlayMove[]>([]);
   const [submitted, setSubmitted] = useState(false);
 
   const me = match.player;
   const opponent = otherPlayer(me);
-  const selected = selectedId ? unitById(state, selectedId) : undefined;
+  const canResolve = match.role === "host";
+  const selectedUnits = selectedIds
+    .map((id) => unitById(state, id))
+    .filter((unit): unit is PlayUnit => unit !== undefined);
   const inspectedTile = inspectedId
     ? MAP_TILES.find((tile) => tile.id === inspectedId)
     : undefined;
@@ -395,38 +459,59 @@ function OnlineStarter({
 
   // A new round means both plans resolved; clear the local submission.
   useEffect(() => {
-    setSelectedId(null);
+    setSelectedIds([]);
     setDraft([]);
     setSubmitted(false);
   }, [state.turn]);
+
+  // The battle phase locks planning. Drop the queued markers so the board shows
+  // the conflict itself rather than orders that were held at the border.
+  useEffect(() => {
+    if (state.phase === "battle") {
+      setSelectedIds([]);
+      setDraft([]);
+    }
+  }, [state.phase]);
 
   const removeOrder = (unitId: string) => {
     setDraft((current) => current.filter((move) => move.unitId !== unitId));
   };
 
+  const toggleSelection = (unitId: string) => {
+    setSelectedIds((current) => toggleSelectedIds(state, current, unitId));
+  };
+
   const onTileClick = (tile: MapTile) => {
-    if (
+    const group = selectedUnits;
+    const canGroupMove =
       !submitted &&
-      selected &&
-      canUnitMoveTo(state, selected, tile.col, tile.row)
-    ) {
+      group.length > 0 &&
+      group.every((unit) => canUnitMoveTo(state, unit, tile.col, tile.row));
+
+    if (canGroupMove) {
+      const ids = new Set(group.map((unit) => unit.id));
       setDraft((current) => [
-        ...current.filter((move) => move.unitId !== selected.id),
-        { unitId: selected.id, col: tile.col, row: tile.row },
+        ...current.filter((move) => !ids.has(move.unitId)),
+        ...group.map((unit) => ({
+          unitId: unit.id,
+          col: tile.col,
+          row: tile.row,
+        })),
       ]);
-      setSelectedId(null);
+      setSelectedIds([]);
+      setInspectedId(tile.id);
       return;
     }
 
     // Clicking any hex inspects it. Own hexes list their pieces; enemy hexes
-    // deliberately reveal nothing about the stack inside.
+    // deliberately reveal nothing about the stack inside until a battle starts.
     setInspectedId(tile.id);
   };
 
   const submit = () => {
     if (submitted) return;
     setSubmitted(true);
-    setSelectedId(null);
+    setSelectedIds([]);
     onSubmit(draft);
   };
 
@@ -439,15 +524,22 @@ function OnlineStarter({
     );
   };
 
-  const status = submitted
-    ? `Orders submitted. Waiting for ${PLAYER_LABEL[opponent]}…`
-    : opponentReady
-      ? `${PLAYER_LABEL[opponent]} has submitted. Send your orders when ready.`
-      : selected
-        ? `${UNIT_LABEL[selected.typeId]} selected — click a highlighted neighbour.`
-        : orders.length > 0
-          ? `${orders.length} order${orders.length === 1 ? "" : "s"} queued. Submit when ready.`
-          : "Click one of your hexes, choose a piece from the hex panel, then click a highlighted neighbour.";
+  const status =
+    state.phase === "battle"
+      ? canResolve
+        ? "Armies are locked in conflict. Resolve the battles to finish the round."
+        : "Waiting for the host to resolve the battles…"
+      : submitted
+        ? `Orders submitted. Waiting for ${PLAYER_LABEL[opponent]}…`
+        : opponentReady
+          ? `${PLAYER_LABEL[opponent]} has submitted. Send your orders when ready.`
+          : selectedUnits.length > 0
+            ? `${unitGroupLabel(state, selectedIds)} selected — click a highlighted neighbour.`
+            : orders.length > 0
+              ? `${orders.length} order${orders.length === 1 ? "" : "s"} queued. Submit when ready.`
+              : "Click one of your hexes, choose pieces from the hex panel, then click a highlighted neighbour.";
+
+  const locked = submitted || state.phase === "battle";
 
   return (
     <div className="stack">
@@ -466,29 +558,38 @@ function OnlineStarter({
             state={state}
             tile={inspectedTile}
             viewer={me}
-            selectedId={selectedId}
-            disabled={submitted}
+            selectedIds={selectedIds}
+            disabled={locked}
             draft={draft}
-            onSelect={(unitId) =>
-              setSelectedId((current) => (current === unitId ? null : unitId))
-            }
+            onToggle={toggleSelection}
           />
         </aside>
 
         <section className="panel play-board-panel">
           <header className="play-status">
             <div>
-              <span className="eyebrow">Round {state.turn} · simultaneous</span>
+              <span className="eyebrow">
+                Round {state.turn} ·{" "}
+                {state.phase === "battle" ? "battle phase" : "simultaneous"}
+              </span>
               <h3 className={`play-owner owner-${me}`}>
-                {submitted ? "Orders locked" : "Plan your moves"}
+                {state.phase === "battle"
+                  ? "Resolve the conflict"
+                  : submitted
+                    ? "Orders locked"
+                    : "Plan your moves"}
               </h3>
               <p className="muted small">{status}</p>
             </div>
             <div className="play-status-tags">
               <Tag tone={me === "a" ? "team-a" : "team-b"}>
-                {submitted ? "you submitted" : "you are planning"}
+                {state.phase === "battle"
+                  ? "battle phase"
+                  : submitted
+                    ? "you submitted"
+                    : "you are planning"}
               </Tag>
-              {opponentReady && !submitted && (
+              {opponentReady && !submitted && state.phase !== "battle" && (
                 <Tag tone={opponent === "a" ? "team-a" : "team-b"}>
                   {PLAYER_LABEL[opponent]} submitted
                 </Tag>
@@ -496,21 +597,32 @@ function OnlineStarter({
             </div>
           </header>
 
+          <BattlePanel
+            state={state}
+            viewer={me}
+            canResolve={canResolve}
+            onResolve={onResolveBattles}
+          />
+
           <StarterBoard
             state={state}
-            selectedId={selectedId}
+            selectedIds={selectedIds}
             inspectedId={inspectedId}
             onTileClick={onTileClick}
             draft={draft}
-            disabled={submitted}
+            disabled={locked}
             canReach={(unit, col, row) => canUnitMoveTo(state, unit, col, row)}
           />
 
           <div className="play-actions">
             <span className="muted small">
-              {orders.length > 0
-                ? `${orders.length} order${orders.length === 1 ? "" : "s"} queued. Workers harvest when both players submit.`
-                : "Queue one move per unit, then submit. Workers harvest when the round resolves."}
+              {state.phase === "battle"
+                ? canResolve
+                  ? "The battle phase pauses the round until every conflict is resolved."
+                  : "The host will resolve the battles, then the next round begins."
+                : orders.length > 0
+                  ? `${orders.length} order${orders.length === 1 ? "" : "s"} queued. Workers harvest when both players submit.`
+                  : "Select one or more pieces on a hex, march them together, then submit. Workers harvest when the round resolves."}
             </span>
             <div className="play-action-buttons">
               <button className="btn danger" type="button" onClick={forfeit}>
@@ -520,7 +632,7 @@ function OnlineStarter({
                 className="btn primary"
                 type="button"
                 onClick={submit}
-                disabled={submitted}
+                disabled={locked}
               >
                 {submitted ? "Submitted" : "Submit"}
               </button>
@@ -562,6 +674,7 @@ function OnlineStarter({
             )}
           </section>
           <PlayLog state={state} />
+          <BattleReports state={state} />
           <section className="panel">
             <div className="panel-head">
               <h3>Online match</h3>
@@ -574,21 +687,30 @@ function OnlineStarter({
                 piece stacked there.
               </li>
               <li>
-                Choose a Worker or Soldier in the panel, then click a highlighted
-                adjacent hex. Any number of allied pieces can share a hex; enemy
-                hexes cannot be entered.
+                Choose one or more Workers or Soldiers in the panel, then click a
+                highlighted adjacent hex. The whole group marches together.
+              </li>
+              <li>
+                Any number of allied pieces can share a hex. Moving into an allied
+                hex merges the armies, and two allied groups can meet on the same
+                empty hex.
+              </li>
+              <li>
+                An enemy-held hex is a valid destination. If the enemy leaves, you
+                move in; if the enemy stays, the border turns red and the battle
+                phase resolves the conflict.
               </li>
               <li>
                 A hex shows a dot in its owner's colour instead of every piece,
                 so inspect your stacks to see what is inside.
               </li>
               <li>
-                Submit your orders. When both players have submitted, every unit
-                moves at once and Workers harvest.
+                Submit your orders. When both players have submitted, every army
+                moves at once, conflicts are fought, and Workers harvest.
               </li>
               <li>
-                If both players enter the same empty hex, both sides' moves are
-                cancelled.
+                The host resolves the battle phase; the guest sees the conflict
+                borders and waits for the result.
               </li>
               <li>
                 Forfeit declares {PLAYER_LABEL[opponent]} the winner and returns
@@ -605,7 +727,7 @@ function OnlineStarter({
 
 function StarterBoard({
   state,
-  selectedId,
+  selectedIds,
   inspectedId = null,
   onTileClick,
   canReach,
@@ -613,14 +735,17 @@ function StarterBoard({
   disabled = false,
 }: {
   state: PlayState;
-  selectedId: string | null;
+  selectedIds: string[];
   inspectedId?: string | null;
   onTileClick: (tile: MapTile) => void;
   canReach: (unit: PlayUnit, col: number, row: number) => boolean;
   draft?: PlayMove[];
   disabled?: boolean;
 }) {
-  const selected = selectedId ? unitById(state, selectedId) : undefined;
+  const selectedUnits = selectedIds
+    .map((id) => unitById(state, id))
+    .filter((unit): unit is PlayUnit => unit !== undefined);
+  const selectedOwner = selectedUnits[0]?.owner;
 
   return (
     <div className="hex-board-wrap">
@@ -637,16 +762,30 @@ function StarterBoard({
           const occupants = unitsAt(state, tile.col, tile.row);
           const owner = occupants[0]?.owner;
           const movable =
-            selected && !disabled
-              ? canReach(selected, tile.col, tile.row)
-              : false;
-          const isSelected = occupants.some((unit) => unit.id === selectedId);
-          const draftTarget = draft.find(
+            !disabled &&
+            selectedUnits.length > 0 &&
+            selectedUnits.every((unit) => canReach(unit, tile.col, tile.row));
+          const attack =
+            movable &&
+            selectedOwner !== undefined &&
+            occupants.some((unit) => unit.owner !== selectedOwner);
+          const isSelected = occupants.some((unit) => selectedIds.includes(unit.id));
+          const draftMoves = draft.filter(
             (move) => move.col === tile.col && move.row === tile.row,
           );
-          const draftUnit = draftTarget
-            ? unitById(state, draftTarget.unitId)
-            : undefined;
+          const draftUnit =
+            draftMoves[0] !== undefined
+              ? unitById(state, draftMoves[0].unitId)
+              : undefined;
+          const conflictTarget = state.conflicts.some(
+            (conflict) =>
+              conflict.target.col === tile.col && conflict.target.row === tile.row,
+          );
+          const conflictSource = state.conflicts.some((conflict) =>
+            conflict.attacks.some(
+              (entry) => entry.from.col === tile.col && entry.from.row === tile.row,
+            ),
+          );
           const allQueued =
             occupants.length > 0 &&
             occupants.every((unit) =>
@@ -656,11 +795,14 @@ function StarterBoard({
             "hex-tile",
             tile.resource ? `has-resource resource-${tile.resource}` : "",
             movable ? "is-move" : "",
+            attack ? "is-attack" : "",
             isSelected ? "is-selected" : "",
             inspectedId === tile.id ? "is-inspected" : "",
             owner ? `has-unit owner-${owner}` : "",
-            draftTarget ? "is-draft-target" : "",
+            draftMoves.length > 0 ? "is-draft-target" : "",
             allQueued ? "is-draft-source" : "",
+            conflictTarget ? "is-conflict" : "",
+            conflictSource ? "is-conflict-source" : "",
             disabled ? "is-locked" : "",
           ]
             .filter(Boolean)
@@ -678,7 +820,9 @@ function StarterBoard({
               onClick={() => onTileClick(tile)}
               aria-label={`${tileLabel(tile.col, tile.row)}${tile.resource ? `, ${tile.resource}` : ""}${
                 owner ? `, occupied by ${PLAYER_LABEL[owner]}` : ""
-              }${draftTarget ? ", queued move here" : ""}`}
+              }${draftMoves.length > 0 ? ", queued move here" : ""}${
+                conflictTarget ? ", conflict" : ""
+              }`}
             >
               <span className="hex-face">
                 {tile.resource && (
@@ -692,12 +836,17 @@ function StarterBoard({
                     aria-hidden="true"
                   />
                 )}
-                {draftTarget && draftUnit && (
+                {conflictTarget && (
+                  <span className="hex-conflict-badge" aria-hidden="true">
+                    ⚔
+                  </span>
+                )}
+                {draftMoves.length > 0 && draftUnit && (
                   <span
                     className={`hex-draft-marker owner-${draftUnit.owner}`}
                     aria-hidden="true"
                   >
-                    →
+                    →{draftMoves.length > 1 ? draftMoves.length : ""}
                   </span>
                 )}
                 <span className="hex-coord" aria-hidden="true">
@@ -707,8 +856,177 @@ function StarterBoard({
             </button>
           );
         })}
+        <ConflictOverlay conflicts={state.conflicts} />
       </div>
     </div>
+  );
+}
+
+function ConflictOverlay({ conflicts }: { conflicts: Conflict[] }) {
+  if (conflicts.length === 0) return null;
+
+  return (
+    <svg
+      className="hex-conflict-layer"
+      width={BOARD_W}
+      height={BOARD_H}
+      viewBox={`0 0 ${BOARD_W} ${BOARD_H}`}
+      aria-hidden="true"
+    >
+      {conflicts.flatMap((conflict) =>
+        conflict.attacks.map((attack) => {
+          const from = hexCenter(attack.from.col, attack.from.row);
+          const to = hexCenter(conflict.target.col, conflict.target.row);
+          return (
+            <g key={`${conflict.id}-${attack.from.col}-${attack.from.row}`}>
+              <line
+                className="hex-conflict-line"
+                x1={from.x}
+                y1={from.y}
+                x2={to.x}
+                y2={to.y}
+              />
+              <circle
+                className="hex-conflict-node"
+                cx={to.x}
+                cy={to.y}
+                r={7}
+              />
+            </g>
+          );
+        }),
+      )}
+    </svg>
+  );
+}
+
+function BattlePanel({
+  state,
+  viewer,
+  canResolve,
+  onResolve,
+}: {
+  state: PlayState;
+  viewer: Player;
+  canResolve: boolean;
+  onResolve: () => void;
+}) {
+  if (state.phase !== "battle" || state.conflicts.length === 0) return null;
+
+  return (
+    <section className="panel battle-panel">
+      <div className="panel-head">
+        <h3>Battle phase</h3>
+        <span className="muted small">
+          {state.conflicts.length} conflict{state.conflicts.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      <p className="muted small">
+        Armies that entered an occupied hex were held at the border. The battle
+        phase fights each contested hex before the round can end.
+      </p>
+      <ul className="battle-conflicts">
+        {state.conflicts.map((conflict) => {
+          const defenderUnits = unitsAt(
+            state,
+            conflict.target.col,
+            conflict.target.row,
+          ).filter((unit) => unit.owner === conflict.defender);
+
+          return (
+            <li
+              key={conflict.id}
+              className={`battle-conflict owner-${conflict.defender}`}
+            >
+              <div className="battle-conflict-head">
+                <strong>⚔ {tileLabel(conflict.target.col, conflict.target.row)}</strong>
+                <span className="battle-role">
+                  {conflict.defender === viewer ? "you defend" : "you attack"}
+                </span>
+                <span className="muted small">
+                  {PLAYER_LABEL[conflict.defender]} defends
+                </span>
+              </div>
+              <div className="battle-sides">
+                <span>
+                  <b>{PLAYER_LABEL[conflict.defender]}</b>:{" "}
+                  {unitGroupLabel(state, defenderUnits.map((unit) => unit.id))}
+                </span>
+                {conflict.attacks.map((attack) => (
+                  <span key={`${attack.from.col},${attack.from.row}`}>
+                    <b>{PLAYER_LABEL[attack.player]}</b> from{" "}
+                    {tileLabel(attack.from.col, attack.from.row)}:{" "}
+                    {unitGroupLabel(state, attack.unitIds)}
+                  </span>
+                ))}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      {canResolve ? (
+        <button className="btn primary" type="button" onClick={onResolve}>
+          Resolve battles
+        </button>
+      ) : (
+        <p className="battle-waiting">
+          Waiting for the host to resolve the battles…
+        </p>
+      )}
+    </section>
+  );
+}
+
+function BattleReports({ state }: { state: PlayState }) {
+  if (state.battles.length === 0) return null;
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h3>Battle reports</h3>
+        <span className="muted small">last battles</span>
+      </div>
+      <ul className="battle-reports">
+        {state.battles.map((report) => (
+          <BattleReportCard key={report.conflictId} report={report} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function BattleReportCard({ report }: { report: BattleReport }) {
+  return (
+    <li className="battle-report">
+      <div className="battle-report-head">
+        <strong>{tileLabel(report.target.col, report.target.row)}</strong>
+        <span className={`battle-verdict verdict-${report.winner}`}>
+          {report.winner === "draw"
+            ? "Draw"
+            : `${PLAYER_LABEL[report.winner]} wins`}
+        </span>
+      </div>
+      <p className="battle-report-reason">{report.reason}</p>
+      <div className="battle-report-sides">
+        <span className={`owner-${report.attacker}`}>
+          {PLAYER_LABEL[report.attacker]}:{" "}
+          {report.survivors[report.attacker].length}/
+          {report.startingUnits[report.attacker]} survive
+        </span>
+        <span className={`owner-${report.defender}`}>
+          {PLAYER_LABEL[report.defender]}:{" "}
+          {report.survivors[report.defender].length}/
+          {report.startingUnits[report.defender]} survive
+        </span>
+      </div>
+      <p className="battle-report-outcome">
+        {report.occupied
+          ? `${PLAYER_LABEL[report.attacker]} took the hex.`
+          : report.winner === "draw"
+            ? "The hex remains contested."
+            : `${PLAYER_LABEL[report.defender]} held the hex.`}
+      </p>
+    </li>
   );
 }
 
@@ -716,22 +1034,29 @@ function HexInspector({
   state,
   tile,
   viewer,
-  selectedId,
-  onSelect,
+  selectedIds,
+  onToggle,
   draft = [],
   disabled = false,
 }: {
   state: PlayState;
   tile: MapTile | undefined;
   viewer: Player;
-  selectedId: string | null;
-  onSelect: (unitId: string) => void;
+  selectedIds: string[];
+  onToggle: (unitId: string) => void;
   draft?: PlayMove[];
   disabled?: boolean;
 }) {
   const occupants = tile ? unitsAt(state, tile.col, tile.row) : [];
   const owner = occupants[0]?.owner;
   const enemy = owner !== undefined && owner !== viewer;
+  const conflictHere =
+    tile !== undefined &&
+    state.conflicts.some(
+      (conflict) =>
+        conflict.target.col === tile.col && conflict.target.row === tile.row,
+    );
+  const revealEnemy = enemy && state.phase === "battle" && conflictHere;
   const hasSelectable = occupants.some(
     (unit) =>
       owner === viewer && !disabled && unit.typeId !== "base" && !unit.moved,
@@ -751,7 +1076,7 @@ function HexInspector({
           Click a hex to inspect it. Your own hexes list every piece stacked
           there.
         </p>
-      ) : enemy ? (
+      ) : enemy && !revealEnemy ? (
         <p className="play-inspector-enemy">Occupied by enemy</p>
       ) : occupants.length === 0 ? (
         <p className="muted small">
@@ -762,6 +1087,7 @@ function HexInspector({
           <p className="muted small">
             {occupants.length} piece{occupants.length === 1 ? "" : "s"} ·{" "}
             {PLAYER_LABEL[owner ?? viewer]}
+            {revealEnemy ? " · revealed by conflict" : ""}
           </p>
           <ul className="play-inspector-list">
             {occupants.map((unit) => {
@@ -771,12 +1097,22 @@ function HexInspector({
                 !disabled &&
                 unit.typeId !== "base" &&
                 !unit.moved;
+              const hp = unitHp(unit);
+              const maxHp = getDefinition(unit.typeId).hp;
+              const note =
+                unit.typeId === "base"
+                  ? "Structure · cannot move"
+                  : unit.moved
+                    ? "Already moved"
+                    : order
+                      ? `Queued → ${tileLabel(order.col, order.row)}`
+                      : "Ready to move";
               return (
                 <li key={unit.id}>
                   <button
                     type="button"
-                    className={`play-piece${selectedId === unit.id ? " is-selected" : ""}`}
-                    onClick={() => onSelect(unit.id)}
+                    className={`play-piece${selectedIds.includes(unit.id) ? " is-selected" : ""}`}
+                    onClick={() => onToggle(unit.id)}
                     disabled={!selectable}
                   >
                     <span
@@ -791,13 +1127,8 @@ function HexInspector({
                         {UNIT_LABEL[unit.typeId]}
                       </strong>
                       <span className="play-piece-note">
-                        {unit.typeId === "base"
-                          ? "Structure · cannot move"
-                          : unit.moved
-                            ? "Already moved"
-                            : order
-                              ? `Queued → ${tileLabel(order.col, order.row)}`
-                              : "Ready to move"}
+                        {note}
+                        {hp < maxHp ? ` · ${hp}/${maxHp} HP` : ""}
                       </span>
                     </span>
                   </button>
@@ -807,7 +1138,14 @@ function HexInspector({
           </ul>
           {owner === viewer && hasSelectable && (
             <p className="muted small">
-              Pick a piece, then click a highlighted neighbouring hex.
+              {selectedIds.length > 0
+                ? `${selectedIds.length} selected. Click a highlighted neighbour to march the group together.`
+                : "Select one or more pieces, then click a highlighted neighbouring hex."}
+            </p>
+          )}
+          {revealEnemy && (
+            <p className="muted small">
+              The conflict reveals the defending garrison.
             </p>
           )}
         </>
@@ -902,14 +1240,17 @@ function PracticePlay({ onBack }: { onBack: () => void }) {
 }
 
 function StarterPlay() {
-  const [state, setState] = useLocalStorage<PlayState>(
+  const [storedState, setState] = useLocalStorage<PlayState>(
     "mbg.play.state",
     createInitialState(),
   );
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const state = normalizePlayState(storedState);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [inspectedId, setInspectedId] = useState<string | null>(null);
 
-  const selected = selectedId ? unitById(state, selectedId) : undefined;
+  const selectedUnits = selectedIds
+    .map((id) => unitById(state, id))
+    .filter((unit): unit is PlayUnit => unit !== undefined);
   const inspectedTile = inspectedId
     ? MAP_TILES.find((tile) => tile.id === inspectedId)
     : undefined;
@@ -919,21 +1260,35 @@ function StarterPlay() {
   ).length;
 
   useEffect(() => {
-    setSelectedId(null);
+    setSelectedIds([]);
   }, [state.active]);
 
   const reset = () => {
     setState(createInitialState());
-    setSelectedId(null);
+    setSelectedIds([]);
     setInspectedId(null);
   };
 
+  const toggleSelection = (unitId: string) => {
+    setSelectedIds((current) => toggleSelectedIds(state, current, unitId));
+  };
+
   const onTileClick = (tile: MapTile) => {
-    if (selected && canMoveTo(state, selected, tile.col, tile.row)) {
-      const next = moveUnit(state, selected.id, tile.col, tile.row);
+    const group = selectedUnits;
+    const canGroupMove =
+      group.length > 0 &&
+      group.every((unit) => canMoveTo(state, unit, tile.col, tile.row));
+
+    if (canGroupMove) {
+      const next = moveUnits(
+        state,
+        group.map((unit) => unit.id),
+        tile.col,
+        tile.row,
+      );
       if (next !== state) {
         setState(next);
-        setSelectedId(null);
+        setSelectedIds([]);
         setInspectedId(tile.id);
       }
       return;
@@ -944,14 +1299,22 @@ function StarterPlay() {
 
   const finishTurn = () => {
     setState(endTurn(state));
-    setSelectedId(null);
+    setSelectedIds([]);
   };
 
-  const status = selected
-    ? `${UNIT_LABEL[selected.typeId]} selected — click a highlighted neighbour.`
-    : readyUnits > 0
-      ? "Click one of your hexes, then choose a piece from the hex panel."
-      : "Every mobile unit has moved. End the turn to harvest and pass play.";
+  const resolveBattlePhase = () => {
+    setState(resolveBattles(state));
+    setSelectedIds([]);
+  };
+
+  const status =
+    state.phase === "battle"
+      ? "Battle phase — resolve the conflicts before the turn can end."
+      : selectedUnits.length > 0
+        ? `${unitGroupLabel(state, selectedIds)} selected — click a highlighted neighbour.`
+        : readyUnits > 0
+          ? "Click one of your hexes, then choose one or more pieces from the hex panel."
+          : "Every mobile unit has moved. End the turn to harvest and pass play.";
 
   return (
     <div className="stack">
@@ -969,19 +1332,23 @@ function StarterPlay() {
             state={state}
             tile={inspectedTile}
             viewer={state.active}
-            selectedId={selectedId}
-            onSelect={(unitId) =>
-              setSelectedId((current) => (current === unitId ? null : unitId))
-            }
+            selectedIds={selectedIds}
+            disabled={state.phase === "battle"}
+            onToggle={toggleSelection}
           />
         </aside>
 
         <section className="panel play-board-panel">
           <header className="play-status">
             <div>
-              <span className="eyebrow">Round {state.turn}</span>
+              <span className="eyebrow">
+                Round {state.turn}
+                {state.phase === "battle" ? " · battle phase" : ""}
+              </span>
               <h3 className={`play-owner owner-${state.active}`}>
-                {PLAYER_LABEL[state.active]}'s turn
+                {state.phase === "battle"
+                  ? "Resolve the conflict"
+                  : `${PLAYER_LABEL[state.active]}'s turn`}
               </h3>
               <p className="muted small">{status}</p>
             </div>
@@ -990,39 +1357,69 @@ function StarterPlay() {
             </Tag>
           </header>
 
+          <BattlePanel
+            state={state}
+            viewer={state.active}
+            canResolve
+            onResolve={resolveBattlePhase}
+          />
+
           <StarterBoard
             state={state}
-            selectedId={selectedId}
+            selectedIds={selectedIds}
             inspectedId={inspectedId}
             onTileClick={onTileClick}
+            disabled={state.phase === "battle"}
             canReach={(unit, col, row) => canMoveTo(state, unit, col, row)}
           />
 
           <div className="play-actions">
             <span className="muted small">
-              Ending the turn collects <strong>{stockSummary(income)}</strong>.
+              {state.phase === "battle" ? (
+                "The battle phase must be resolved before the turn can end."
+              ) : (
+                <>
+                  Ending the turn collects <strong>{stockSummary(income)}</strong>.
+                </>
+              )}
             </span>
-            <button className="btn primary" onClick={finishTurn}>
-              End {PLAYER_LABEL[state.active]}'s turn
-            </button>
+            {state.phase === "battle" ? (
+              <button className="btn primary" onClick={resolveBattlePhase}>
+                Resolve battles
+              </button>
+            ) : (
+              <button className="btn primary" onClick={finishTurn}>
+                End {PLAYER_LABEL[state.active]}'s turn
+              </button>
+            )}
           </div>
         </section>
 
         <aside className="stack play-aside">
           <PlayStocks state={state} />
           <PlayLog state={state} />
+          <BattleReports state={state} />
           <section className="panel">
             <div className="panel-head">
               <h3>How to play</h3>
             </div>
             <ul className="play-help">
               <li>
-                Click one of your hexes to inspect it, then choose a Worker or
-                Soldier from the hex panel.
+                Click one of your hexes to inspect it, then select one or more
+                Workers or Soldiers from the hex panel.
               </li>
               <li>
-                Click a highlighted neighbouring hex to move. Any number of
-                allied pieces can share a hex, and enemy hexes cannot be entered.
+                Click a highlighted neighbouring hex to move the whole group.
+                Any number of allied pieces can share a hex.
+              </li>
+              <li>
+                Allied hexes are valid destinations, so armies can merge. Two
+                allied groups can also meet on the same empty hex.
+              </li>
+              <li>
+                Enemy-held hexes are valid destinations too. If the enemy stays,
+                the border turns red and the battle resolves immediately in
+                practice. If the enemy leaves, the hex is yours.
               </li>
               <li>A hex shows a dot in its owner's colour instead of each piece.</li>
               <li>Each unit moves once per turn. Bases hold their edge.</li>
@@ -1031,8 +1428,8 @@ function StarterPlay() {
                 node adds 1 to your stock, even when Workers are stacked.
               </li>
               <li>
-                Resources are the score for now. Combat, building and income spending
-                come later.
+                Resources are the score for now. Building and income spending come
+                later.
               </li>
             </ul>
           </section>
