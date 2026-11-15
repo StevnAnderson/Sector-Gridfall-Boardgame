@@ -13,12 +13,15 @@ import {
   createInitialState,
   describeCost,
   endTurn,
+  gatherFor,
+  gatherOptionsAt,
   harvestFor,
   moveUnits,
   normalizePlayState,
   otherPlayer,
   resolveBattles,
   resolveRound,
+  setGatherPreference,
   tileLabel,
   unitById,
   unitHp,
@@ -27,6 +30,8 @@ import {
   type BuildOption,
   type BuildOrder,
   type Conflict,
+  type GatherFrom,
+  type HarvestChoice,
   type MapTile,
   type PlayMove,
   type PlayState,
@@ -123,6 +128,15 @@ function unitGroupLabel(state: PlayState, unitIds: string[]): string {
 
 type PlayMode = "starter" | ChessVariantId;
 
+/** A pending Base/Refinery pick, either for a move or a stationary re-pick. */
+interface PendingGather {
+  unitIds: string[];
+  col: number;
+  row: number;
+  tileId: string;
+  move: boolean;
+}
+
 /**
  * The Play tab opens on a matching screen. Hosting reserves a short code;
  * joining connects to that code and hands the board to both players. The
@@ -166,8 +180,8 @@ function MatchFlow({
   const matchRef = useRef<MatchHandle | null>(null);
   const stateRef = useRef<PlayState | null>(null);
   const pendingRef = useRef<{
-    a: { moves: PlayMove[]; builds: BuildOrder[] } | null;
-    b: { moves: PlayMove[]; builds: BuildOrder[] } | null;
+    a: { moves: PlayMove[]; builds: BuildOrder[]; harvests: HarvestChoice[] } | null;
+    b: { moves: PlayMove[]; builds: BuildOrder[]; harvests: HarvestChoice[] } | null;
   }>({
     a: null,
     b: null,
@@ -193,12 +207,16 @@ function MatchFlow({
     handle.send({ kind: "state", state: next });
   };
 
-  const submitMoves = (moves: PlayMove[], builds: BuildOrder[]) => {
+  const submitMoves = (
+    moves: PlayMove[],
+    builds: BuildOrder[],
+    harvests: HarvestChoice[],
+  ) => {
     const handle = matchRef.current;
     if (!handle) return;
 
     if (handle.role === "host") {
-      pendingRef.current.a = { moves, builds };
+      pendingRef.current.a = { moves, builds, harvests };
       // Let the guest know the host is waiting on them. If the guest submitted
       // first, the round resolves right away instead.
       if (!pendingRef.current.b) handle.send({ kind: "ready", player: "a" });
@@ -206,7 +224,10 @@ function MatchFlow({
       return;
     }
 
-    handle.send({ kind: "action", action: { type: "submit", moves, builds } });
+    handle.send({
+      kind: "action",
+      action: { type: "submit", moves, builds, harvests },
+    });
   };
 
   /** Host-only: finish the battle phase, then broadcast the next round. */
@@ -275,6 +296,7 @@ function MatchFlow({
         pendingRef.current.b = {
           moves: message.action.moves,
           builds: message.action.builds ?? [],
+          harvests: message.action.harvests ?? [],
         };
         setOpponentReady(true);
         resolveIfReady(handle);
@@ -455,7 +477,7 @@ function OnlineStarter({
   match: MatchHandle;
   state: PlayState;
   opponentReady: boolean;
-  onSubmit: (moves: PlayMove[], builds: BuildOrder[]) => void;
+  onSubmit: (moves: PlayMove[], builds: BuildOrder[], harvests: HarvestChoice[]) => void;
   onResolveBattles: () => void;
   onFinish: (reason: string, leaveDelay?: number) => void;
 }) {
@@ -463,6 +485,8 @@ function OnlineStarter({
   const [inspectedId, setInspectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<PlayMove[]>([]);
   const [builds, setBuilds] = useState<BuildOrder[]>([]);
+  const [harvests, setHarvests] = useState<HarvestChoice[]>([]);
+  const [pendingGather, setPendingGather] = useState<PendingGather | null>(null);
   const [submitted, setSubmitted] = useState(false);
 
   const me = match.player;
@@ -486,13 +510,22 @@ function OnlineStarter({
       (entry): entry is { order: BuildOrder; unit: PlayUnit } =>
         entry.unit !== undefined,
     );
-  const queuedCount = orders.length + buildOrders.length;
+  const harvestOrders = harvests
+    .map((choice) => ({ choice, unit: unitById(state, choice.unitId) }))
+    .filter(
+      (entry): entry is { choice: HarvestChoice; unit: PlayUnit } =>
+        entry.unit !== undefined &&
+        !draft.some((move) => move.unitId === entry.choice.unitId),
+    );
+  const queuedCount = orders.length + buildOrders.length + harvestOrders.length;
 
   // A new round means both plans resolved; clear the local submission.
   useEffect(() => {
     setSelectedIds([]);
     setDraft([]);
     setBuilds([]);
+    setHarvests([]);
+    setPendingGather(null);
     setSubmitted(false);
   }, [state.turn]);
 
@@ -503,21 +536,31 @@ function OnlineStarter({
       setSelectedIds([]);
       setDraft([]);
       setBuilds([]);
+      setHarvests([]);
+      setPendingGather(null);
     }
   }, [state.phase]);
 
   const removeOrder = (unitId: string) => {
     setDraft((current) => current.filter((move) => move.unitId !== unitId));
+    setHarvests((current) => current.filter((choice) => choice.unitId !== unitId));
   };
 
   const removeBuild = (builderId: string) => {
     setBuilds((current) => current.filter((order) => order.builderId !== builderId));
   };
 
+  const removeHarvest = (unitId: string) => {
+    setHarvests((current) => current.filter((choice) => choice.unitId !== unitId));
+  };
+
   const addBuild = (builderId: string, typeId: PlayUnitType) => {
     if (submitted || state.phase === "battle") return;
     // One action per piece: a build replaces that piece's queued move.
     setDraft((current) => current.filter((move) => move.unitId !== builderId));
+    setHarvests((current) =>
+      current.filter((choice) => choice.unitId !== builderId),
+    );
     setBuilds((current) => [
       ...current.filter((order) => order.builderId !== builderId),
       { builderId, typeId },
@@ -525,30 +568,111 @@ function OnlineStarter({
     setSelectedIds([]);
   };
 
+  /** Queue a group move, optionally recording each Worker's gather choice. */
+  const queueMoves = (
+    unitIds: string[],
+    tile: MapTile,
+    gatherFrom?: GatherFrom,
+  ) => {
+    const ids = new Set(unitIds);
+    const workers = unitIds
+      .map((id) => unitById(state, id))
+      .filter((unit): unit is PlayUnit => unit?.typeId === "worker");
+
+    setDraft((current) => [
+      ...current.filter((move) => !ids.has(move.unitId)),
+      ...unitIds.map((unitId) => ({
+        unitId,
+        col: tile.col,
+        row: tile.row,
+      })),
+    ]);
+    setBuilds((current) => current.filter((order) => !ids.has(order.builderId)));
+    // A moved Worker's old gather choice never carries to its new hex.
+    setHarvests((current) => [
+      ...current.filter((choice) => !ids.has(choice.unitId)),
+      ...(gatherFrom
+        ? workers.map((unit) => ({ unitId: unit.id, gatherFrom }))
+        : []),
+    ]);
+    setSelectedIds([]);
+    setInspectedId(tile.id);
+    setPendingGather(null);
+  };
+
+  const chooseGather = (gatherFrom: GatherFrom) => {
+    const pending = pendingGather;
+    if (!pending) return;
+
+    if (pending.move) {
+      const tile = MAP_TILES.find((entry) => entry.id === pending.tileId);
+      if (tile) queueMoves(pending.unitIds, tile, gatherFrom);
+      return;
+    }
+
+    const unitId = pending.unitIds[0];
+    if (unitId) {
+      setHarvests((current) => [
+        ...current.filter((choice) => choice.unitId !== unitId),
+        { unitId, gatherFrom },
+      ]);
+    }
+    setPendingGather(null);
+    setInspectedId(pending.tileId);
+  };
+
   const toggleSelection = (unitId: string) => {
     setSelectedIds((current) => toggleSelectedIds(state, current, unitId));
   };
 
   const onTileClick = (tile: MapTile) => {
+    if (submitted || state.phase === "battle") {
+      setInspectedId(tile.id);
+      return;
+    }
+
     const group = selectedUnits;
+    const onlyUnit = group.length === 1 ? group[0] : undefined;
+
+    // Selecting a Worker's own dual hex re-picks its structure instead of
+    // trying to move it onto itself.
+    if (
+      onlyUnit &&
+      onlyUnit.typeId === "worker" &&
+      onlyUnit.col === tile.col &&
+      onlyUnit.row === tile.row &&
+      gatherOptionsAt(state, me, tile.col, tile.row).length > 1
+    ) {
+      setPendingGather({
+        unitIds: [onlyUnit.id],
+        col: tile.col,
+        row: tile.row,
+        tileId: tile.id,
+        move: false,
+      });
+      setInspectedId(tile.id);
+      return;
+    }
+
     const canGroupMove =
-      !submitted &&
       group.length > 0 &&
       group.every((unit) => canUnitMoveTo(state, unit, tile.col, tile.row));
 
     if (canGroupMove) {
-      const ids = new Set(group.map((unit) => unit.id));
-      setDraft((current) => [
-        ...current.filter((move) => !ids.has(move.unitId)),
-        ...group.map((unit) => ({
-          unitId: unit.id,
+      const hasWorker = group.some((unit) => unit.typeId === "worker");
+      const gatherOptions = gatherOptionsAt(state, me, tile.col, tile.row);
+      if (hasWorker && gatherOptions.length > 1) {
+        setPendingGather({
+          unitIds: group.map((unit) => unit.id),
           col: tile.col,
           row: tile.row,
-        })),
-      ]);
-      setBuilds((current) => current.filter((order) => !ids.has(order.builderId)));
-      setSelectedIds([]);
-      setInspectedId(tile.id);
+          tileId: tile.id,
+          move: true,
+        });
+        setInspectedId(tile.id);
+        return;
+      }
+      queueMoves(group.map((unit) => unit.id), tile);
       return;
     }
 
@@ -561,7 +685,8 @@ function OnlineStarter({
     if (submitted) return;
     setSubmitted(true);
     setSelectedIds([]);
-    onSubmit(draft, builds);
+    setPendingGather(null);
+    onSubmit(draft, builds, harvests);
   };
 
   const forfeit = () => {
@@ -611,6 +736,7 @@ function OnlineStarter({
             disabled={locked}
             draft={draft}
             builds={builds}
+            harvests={harvests}
             onToggle={toggleSelection}
             onBuild={addBuild}
           />
@@ -654,6 +780,16 @@ function OnlineStarter({
             canResolve={canResolve}
             onResolve={onResolveBattles}
           />
+
+          {pendingGather && (
+            <GatherPrompt
+              state={state}
+              player={me}
+              pending={pendingGather}
+              onChoose={chooseGather}
+              onCancel={() => setPendingGather(null)}
+            />
+          )}
 
           <StarterBoard
             state={state}
@@ -739,6 +875,24 @@ function OnlineStarter({
                     </button>
                   </li>
                 ))}
+                {harvestOrders.map(({ choice, unit }) => (
+                  <li key={`harvest-${unit.id}`} className={`play-order owner-${unit.owner}`}>
+                    <span className="play-order-move">
+                      <strong>{UNIT_LABEL[unit.typeId]}</strong>{" "}
+                      {tileLabel(unit.col, unit.row)} · gathers{" "}
+                      {choice.gatherFrom === "base" ? "◆ Base" : "▲ Refinery"}
+                    </span>
+                    <button
+                      className="play-order-remove"
+                      type="button"
+                      onClick={() => removeHarvest(unit.id)}
+                      disabled={submitted}
+                      aria-label={`Remove harvest choice for ${UNIT_LABEL[unit.typeId]} at ${tileLabel(unit.col, unit.row)}`}
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
               </ul>
             )}
           </section>
@@ -778,6 +932,11 @@ function OnlineStarter({
               <li>
                 A hex shows a dot in its owner's colour instead of every piece,
                 so inspect your stacks to see what is inside.
+              </li>
+              <li>
+                Workers gather from your Base (◆ +1 mineral) or Refinery (▲ +1
+                gas) on their hex. If both stand there, choose when you move in;
+                to change the choice click the Worker, then click its own hex.
               </li>
               <li>
                 Submit your orders. When both players have submitted, every army
@@ -1185,6 +1344,56 @@ function BuildWindow({
   );
 }
 
+function GatherPrompt({
+  state,
+  player,
+  pending,
+  onChoose,
+  onCancel,
+}: {
+  state: PlayState;
+  player: Player;
+  pending: PendingGather;
+  onChoose: (gatherFrom: GatherFrom) => void;
+  onCancel: () => void;
+}) {
+  const options = gatherOptionsAt(state, player, pending.col, pending.row);
+  const unit = unitById(state, pending.unitIds[0] ?? "");
+  const current: GatherFrom = pending.move
+    ? "base"
+    : unit?.gatherFrom ?? "base";
+
+  return (
+    <section className="play-gather" aria-label="Choose a structure to gather from">
+      <div className="panel-head">
+        <h3>{pending.move ? "Gather from" : "Change harvest"}</h3>
+        <span className="muted small">
+          {tileLabel(pending.col, pending.row)}
+        </span>
+      </div>
+      <p className="muted small">
+        This hex holds both a Base and a Refinery. Pick the structure this
+        Worker gathers from at the end of the round.
+      </p>
+      <div className="play-gather-buttons">
+        {options.map((option) => (
+          <button
+            key={option}
+            className={`btn${!pending.move && current === option ? " primary" : ""}`}
+            type="button"
+            onClick={() => onChoose(option)}
+          >
+            {option === "base" ? "Base · +1 ◆ mineral" : "Refinery · +1 ▲ gas"}
+          </button>
+        ))}
+        <button className="btn ghost" type="button" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function HexInspector({
   state,
   tile,
@@ -1193,6 +1402,7 @@ function HexInspector({
   onToggle,
   draft = [],
   builds = [],
+  harvests = [],
   onBuild,
   disabled = false,
 }: {
@@ -1203,6 +1413,7 @@ function HexInspector({
   onToggle: (unitId: string) => void;
   draft?: PlayMove[];
   builds?: BuildOrder[];
+  harvests?: HarvestChoice[];
   onBuild?: (builderId: string, typeId: PlayUnitType) => void;
   disabled?: boolean;
 }) {
@@ -1235,6 +1446,16 @@ function HexInspector({
   const queuedBuild = builder
     ? builds.find((order) => order.builderId === builder.id)
     : undefined;
+  const selectedWorker =
+    selectedPieces.length === 1 && selectedPieces[0]?.typeId === "worker"
+      ? selectedPieces[0]
+      : undefined;
+  const selectedDual =
+    selectedWorker !== undefined &&
+    tile !== undefined &&
+    selectedWorker.col === tile.col &&
+    selectedWorker.row === tile.row &&
+    gatherOptionsAt(state, viewer, tile.col, tile.row).length > 1;
 
   return (
     <section className="panel play-inspector">
@@ -1271,6 +1492,22 @@ function HexInspector({
               const hp = unitHp(unit);
               const maxHp = getDefinition(unit.typeId).hp;
               const isStructure = getDefinition(unit.typeId).kind === "structure";
+              const gatherNote = (() => {
+                if (unit.typeId !== "worker") return "";
+                const col = order?.col ?? unit.col;
+                const row = order?.row ?? unit.row;
+                const gatherOptions = gatherOptionsAt(state, viewer, col, row);
+                if (gatherOptions.length === 0) return "";
+                const choice = harvests.find(
+                  (entry) => entry.unitId === unit.id,
+                )?.gatherFrom;
+                const from: GatherFrom =
+                  gatherOptions.length === 1
+                    ? gatherOptions[0] ?? "base"
+                    : choice ?? unit.gatherFrom ?? "base";
+                const resource = from === "base" ? "◆ mineral" : "▲ gas";
+                return ` · gathers ${resource} from ${from === "base" ? "Base" : "Refinery"}`;
+              })();
               const note = build
                 ? `Building ${UNIT_LABEL[build.typeId]}`
                 : unit.typeId === "base"
@@ -1303,6 +1540,7 @@ function HexInspector({
                       </strong>
                       <span className="play-piece-note">
                         {note}
+                        {gatherNote}
                         {hp < maxHp ? ` · ${hp}/${maxHp} HP` : ""}
                       </span>
                     </span>
@@ -1321,9 +1559,11 @@ function HexInspector({
           )}
           {owner === viewer && hasSelectable && (
             <p className="muted small">
-              {selectedIds.length > 0
-                ? `${selectedIds.length} selected. Click a highlighted neighbour to march the group together.`
-                : "Select one or more pieces, then click a highlighted neighbouring hex. Select a single Worker or Base to build."}
+              {selectedDual
+                ? "Click this hex again to switch which structure this Worker gathers from."
+                : selectedIds.length > 0
+                  ? `${selectedIds.length} selected. Click a highlighted neighbour to march the group together.`
+                  : "Select one or more pieces, then click a highlighted neighbouring hex. Select a single Worker or Base to build."}
             </p>
           )}
           {revealEnemy && (
@@ -1430,6 +1670,7 @@ function StarterPlay() {
   const state = normalizePlayState(storedState);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [inspectedId, setInspectedId] = useState<string | null>(null);
+  const [pendingGather, setPendingGather] = useState<PendingGather | null>(null);
 
   const selectedUnits = selectedIds
     .map((id) => unitById(state, id))
@@ -1444,12 +1685,14 @@ function StarterPlay() {
 
   useEffect(() => {
     setSelectedIds([]);
+    setPendingGather(null);
   }, [state.active]);
 
   const reset = () => {
     setState(createInitialState());
     setSelectedIds([]);
     setInspectedId(null);
+    setPendingGather(null);
   };
 
   const toggleSelection = (unitId: string) => {
@@ -1464,13 +1707,93 @@ function StarterPlay() {
     }
   };
 
+  const chooseGather = (gatherFrom: GatherFrom) => {
+    const pending = pendingGather;
+    if (!pending) return;
+
+    if (pending.move) {
+      const next = moveUnits(
+        state,
+        pending.unitIds,
+        pending.col,
+        pending.row,
+        gatherFrom,
+      );
+      if (next !== state) {
+        setState(next);
+        setSelectedIds([]);
+        setInspectedId(pending.tileId);
+      }
+    } else {
+      const unitId = pending.unitIds[0];
+      if (unitId) {
+        const next = setGatherPreference(
+          state,
+          state.active,
+          unitId,
+          gatherFrom,
+        );
+        if (next !== state) {
+          setState(next);
+          setInspectedId(pending.tileId);
+        }
+      }
+    }
+    setPendingGather(null);
+  };
+
   const onTileClick = (tile: MapTile) => {
+    if (state.phase === "battle") {
+      setInspectedId(tile.id);
+      return;
+    }
+
     const group = selectedUnits;
+    const onlyUnit = group.length === 1 ? group[0] : undefined;
+
+    // Clicking a selected Worker's own dual hex re-picks its structure.
+    if (
+      onlyUnit &&
+      onlyUnit.typeId === "worker" &&
+      onlyUnit.col === tile.col &&
+      onlyUnit.row === tile.row &&
+      gatherOptionsAt(state, state.active, tile.col, tile.row).length > 1
+    ) {
+      setPendingGather({
+        unitIds: [onlyUnit.id],
+        col: tile.col,
+        row: tile.row,
+        tileId: tile.id,
+        move: false,
+      });
+      setInspectedId(tile.id);
+      return;
+    }
+
     const canGroupMove =
       group.length > 0 &&
       group.every((unit) => canMoveTo(state, unit, tile.col, tile.row));
 
     if (canGroupMove) {
+      const hasWorker = group.some((unit) => unit.typeId === "worker");
+      const gatherOptions = gatherOptionsAt(
+        state,
+        state.active,
+        tile.col,
+        tile.row,
+      );
+      if (hasWorker && gatherOptions.length > 1) {
+        setPendingGather({
+          unitIds: group.map((unit) => unit.id),
+          col: tile.col,
+          row: tile.row,
+          tileId: tile.id,
+          move: true,
+        });
+        setInspectedId(tile.id);
+        return;
+      }
+
       const next = moveUnits(
         state,
         group.map((unit) => unit.id),
@@ -1556,6 +1879,16 @@ function StarterPlay() {
             onResolve={resolveBattlePhase}
           />
 
+          {pendingGather && (
+            <GatherPrompt
+              state={state}
+              player={state.active}
+              pending={pendingGather}
+              onChoose={chooseGather}
+              onCancel={() => setPendingGather(null)}
+            />
+          )}
+
           <StarterBoard
             state={state}
             selectedIds={selectedIds}
@@ -1624,8 +1957,14 @@ function StarterPlay() {
                 Building uses the piece's action.
               </li>
               <li>
-                End the turn to harvest: every Worker standing on a ◆ mineral or ▲ gas
-                node adds 1 to your stock, even when Workers are stacked.
+                End the turn to harvest: every Worker on your Base adds 1◆, and
+                every Worker on your Refinery adds 1▲, even when Workers are
+                stacked. Enemy structures produce nothing.
+              </li>
+              <li>
+                If a hex holds both your Base and Refinery, choose the structure
+                when the Worker moves in. To change the choice, select the
+                Worker and click its own hex — this costs no action.
               </li>
               <li>
                 Harvested resources pay for construction and training. Each side

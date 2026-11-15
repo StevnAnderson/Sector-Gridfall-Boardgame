@@ -2292,6 +2292,26 @@ textarea {
   font-size: 11px;
 }
 
+.play-gather {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--amber) 38%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--amber) 7%, var(--bg-2));
+}
+
+.play-gather p {
+  margin: 0;
+}
+
+.play-gather-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .play-orders {
   display: flex;
   flex-direction: column;

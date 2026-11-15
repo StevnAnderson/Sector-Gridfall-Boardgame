@@ -11,6 +11,8 @@ import {
   canUnitMoveTo,
   createInitialState,
   endTurn,
+  gatherFor,
+  gatherOptionsAt,
   harvestFor,
   isAdjacent,
   moveUnit,
@@ -19,12 +21,14 @@ import {
   normalizePlayState,
   resolveBattles,
   resolveRound,
-  tileAt,
-  unitAt,
+  setGatherPreference,
   unitById,
   unitHp,
   unitsAt,
+  type GatherFrom,
   type PlayState,
+  type PlayUnit,
+  type Player,
 } from "./play";
 
 describe("starter map", () => {
@@ -54,13 +58,19 @@ describe("starter map", () => {
     expect(state.turn).toBe(1);
   });
 
-  it("starts each Worker next to a mineral node", () => {
+  it("starts each Worker next to its own Base", () => {
     const state = createInitialState();
-    for (const worker of state.units.filter((unit) => unit.typeId === "worker")) {
-      const adjacent = neighbors(worker.col, worker.row)
-        .map((coord) => tileAt(coord.col, coord.row))
-        .some((tile) => tile?.resource === "minerals");
-      expect(adjacent).toBe(true);
+    for (const player of ["a", "b"] as const) {
+      const base = state.units.find(
+        (unit) => unit.owner === player && unit.typeId === "base",
+      );
+      const workers = state.units.filter(
+        (unit) => unit.owner === player && unit.typeId === "worker",
+      );
+
+      expect(base).toBeDefined();
+      expect(workers).toHaveLength(1);
+      expect(isAdjacent(base!, workers[0]!)).toBe(true);
     }
   });
 });
@@ -171,13 +181,13 @@ describe("movement", () => {
 });
 
 describe("turns and harvesting", () => {
-  it("collects resources for Workers standing on a node when the turn ends", () => {
+  it("collects a mineral for a Worker standing on its Base when the turn ends", () => {
     let state = createInitialState();
     const worker = unitById(state, "a-worker");
-    if (!worker) throw new Error("missing worker");
+    const base = unitById(state, "a-base");
+    if (!worker || !base) throw new Error("missing units");
 
-    state = moveUnit(state, worker.id, worker.col, worker.row + 1);
-    expect(tileAt(0, 1)?.resource).toBe("minerals");
+    state = moveUnit(state, worker.id, base.col, base.row);
     expect(harvestFor(state, "a")).toEqual({ minerals: 1, gas: 0 });
 
     state = endTurn(state);
@@ -205,9 +215,10 @@ describe("turns and harvesting", () => {
   it("gives the incoming player a fresh move without stacking resources", () => {
     let state = createInitialState();
     const worker = unitById(state, "a-worker");
-    if (!worker) throw new Error("missing worker");
+    const base = unitById(state, "a-base");
+    if (!worker || !base) throw new Error("missing units");
 
-    state = moveUnit(state, worker.id, worker.col, worker.row + 1);
+    state = moveUnit(state, worker.id, base.col, base.row);
     state = endTurn(state); // B's turn, A worker harvests
     state = endTurn(state); // back to A
 
@@ -216,7 +227,9 @@ describe("turns and harvesting", () => {
       gas: STARTING_STOCK.gas,
     });
     expect(unitById(state, "a-worker")?.moved).toBe(false);
-    expect(unitAt(state, 0, 1)?.id).toBe(worker.id);
+    expect(unitsAt(state, base.col, base.row).map((unit) => unit.id)).toContain(
+      worker.id,
+    );
   });
 });
 
@@ -226,18 +239,18 @@ describe("simultaneous rounds", () => {
 
     const next = resolveRound(state, {
       a: [
-        { unitId: "a-worker", col: 0, row: 1 },
+        { unitId: "a-worker", col: 1, row: 0 },
         { unitId: "a-soldier", col: 2, row: 1 },
       ],
       b: [
-        { unitId: "b-worker", col: 2, row: 3 },
+        { unitId: "b-worker", col: 1, row: 4 },
         { unitId: "b-soldier", col: 0, row: 3 },
       ],
     });
 
-    expect(unitById(next, "a-worker")).toMatchObject({ col: 0, row: 1 });
+    expect(unitById(next, "a-worker")).toMatchObject({ col: 1, row: 0 });
     expect(unitById(next, "a-soldier")).toMatchObject({ col: 2, row: 1 });
-    expect(unitById(next, "b-worker")).toMatchObject({ col: 2, row: 3 });
+    expect(unitById(next, "b-worker")).toMatchObject({ col: 1, row: 4 });
     expect(unitById(next, "b-soldier")).toMatchObject({ col: 0, row: 3 });
     expect(next.stock).toEqual({
       a: {
@@ -278,13 +291,13 @@ describe("simultaneous rounds", () => {
     ]);
   });
 
-  it("harvests once per Worker stacked on a resource node", () => {
+  it("harvests once per Worker stacked on a Base", () => {
     const state = createInitialState();
     const units = [
       ...state.units.map((unit) =>
-        unit.id === "a-worker" ? { ...unit, col: 0, row: 1 } : unit,
+        unit.id === "a-worker" ? { ...unit, col: 1, row: 0 } : unit,
       ),
-      { id: "a-worker-2", owner: "a" as const, typeId: "worker" as const, col: 0, row: 1, moved: false },
+      { id: "a-worker-2", owner: "a" as const, typeId: "worker" as const, col: 1, row: 0, moved: false },
     ];
     const stacked = { ...state, units };
 
@@ -617,5 +630,177 @@ describe("construction and training", () => {
       buildOptions(state, "a", "a-base").map((option) => option.typeId),
     ).toEqual(["worker"]);
     expect(buildOptions(state, "a", "a-soldier")).toEqual([]);
+  });
+});
+
+describe("structure harvesting", () => {
+  function addRefinery(
+    state: PlayState,
+    owner: Player,
+    col: number,
+    row: number,
+  ): PlayState {
+    const refinery: PlayUnit = {
+      id: `${owner}-refinery-test`,
+      owner,
+      typeId: "refinery",
+      col,
+      row,
+      moved: false,
+    };
+    return { ...state, units: [...state.units, refinery] };
+  }
+
+  /** A round-ready state with A's Worker standing on its Base + Refinery. */
+  function workerOnDualHex(gatherFrom?: GatherFrom): PlayState {
+    let state = addRefinery(createInitialState(), "a", 1, 0);
+    state = moveUnit(state, "a-worker", 1, 0, gatherFrom);
+    return {
+      ...state,
+      units: state.units.map((unit) => ({ ...unit, moved: false })),
+    };
+  }
+
+  it("gathers gas from a Refinery on the Worker's hex", () => {
+    const state = addRefinery(createInitialState(), "a", 0, 0);
+    const worker = unitById(state, "a-worker");
+    if (!worker) throw new Error("missing worker");
+
+    expect(gatherOptionsAt(state, "a", 0, 0)).toEqual(["refinery"]);
+    expect(gatherFor(state, worker)).toEqual({
+      from: "refinery",
+      resource: "gas",
+    });
+    expect(harvestFor(state, "a")).toEqual({ minerals: 0, gas: 1 });
+  });
+
+  it("ignores structures owned by the other player", () => {
+    const state = createInitialState();
+    const occupied: PlayState = {
+      ...state,
+      units: state.units.map((unit) =>
+        unit.id === "a-worker" ? { ...unit, col: 1, row: 4 } : unit,
+      ),
+    };
+    const worker = unitById(occupied, "a-worker");
+    if (!worker) throw new Error("missing worker");
+
+    expect(gatherOptionsAt(occupied, "a", 1, 4)).toEqual([]);
+    expect(gatherFor(occupied, worker)).toBeNull();
+    expect(harvestFor(occupied, "a")).toEqual({ minerals: 0, gas: 0 });
+  });
+
+  it("defaults to the Base on a hex holding both structures", () => {
+    const state = workerOnDualHex();
+    const worker = unitById(state, "a-worker");
+    if (!worker) throw new Error("missing worker");
+
+    expect(gatherOptionsAt(state, "a", 1, 0)).toEqual(["base", "refinery"]);
+    expect(worker.gatherFrom).toBe("base");
+    expect(gatherFor(state, worker)).toEqual({
+      from: "base",
+      resource: "minerals",
+    });
+    expect(harvestFor(state, "a")).toEqual({ minerals: 1, gas: 0 });
+  });
+
+  it("remembers the structure chosen when moving onto a dual hex", () => {
+    let state = addRefinery(createInitialState(), "a", 1, 0);
+    state = moveUnit(state, "a-worker", 1, 0, "refinery");
+    const worker = unitById(state, "a-worker");
+    if (!worker) throw new Error("missing worker");
+
+    expect(worker.gatherFrom).toBe("refinery");
+    expect(gatherFor(state, worker)).toEqual({
+      from: "refinery",
+      resource: "gas",
+    });
+    expect(harvestFor(state, "a")).toEqual({ minerals: 0, gas: 1 });
+  });
+
+  it("re-picks a stationary Worker's structure without spending its move", () => {
+    const before = workerOnDualHex();
+    const state = setGatherPreference(before, "a", "a-worker", "refinery");
+
+    expect(unitById(state, "a-worker")).toMatchObject({
+      moved: false,
+      gatherFrom: "refinery",
+    });
+    expect(harvestFor(state, "a")).toEqual({ minerals: 0, gas: 1 });
+  });
+
+  it("applies a choice sent with a simultaneous move", () => {
+    const state = addRefinery(createInitialState(), "a", 1, 0);
+    const next = resolveRound(state, {
+      a: {
+        moves: [{ unitId: "a-worker", col: 1, row: 0 }],
+        builds: [],
+        harvests: [{ unitId: "a-worker", gatherFrom: "refinery" }],
+      },
+      b: { moves: [], builds: [] },
+    });
+
+    expect(unitById(next, "a-worker")).toMatchObject({
+      col: 1,
+      row: 0,
+      gatherFrom: "refinery",
+    });
+    expect(next.stock.a).toEqual({
+      minerals: STARTING_STOCK.minerals,
+      gas: STARTING_STOCK.gas + 1,
+    });
+  });
+
+  it("applies a stationary re-pick submitted for the round", () => {
+    const next = resolveRound(workerOnDualHex("base"), {
+      a: {
+        moves: [],
+        builds: [],
+        harvests: [{ unitId: "a-worker", gatherFrom: "refinery" }],
+      },
+      b: { moves: [], builds: [] },
+    });
+
+    expect(unitById(next, "a-worker")).toMatchObject({
+      col: 1,
+      row: 0,
+      gatherFrom: "refinery",
+    });
+    expect(next.stock.a).toEqual({
+      minerals: STARTING_STOCK.minerals,
+      gas: STARTING_STOCK.gas + 1,
+    });
+  });
+
+  it("ignores a choice when the destination has only one structure", () => {
+    const next = resolveRound(createInitialState(), {
+      a: {
+        moves: [{ unitId: "a-worker", col: 1, row: 0 }],
+        builds: [],
+        harvests: [{ unitId: "a-worker", gatherFrom: "refinery" }],
+      },
+      b: { moves: [], builds: [] },
+    });
+
+    expect(unitById(next, "a-worker")).toMatchObject({
+      col: 1,
+      row: 0,
+      gatherFrom: "base",
+    });
+    expect(next.stock.a).toEqual({
+      minerals: STARTING_STOCK.minerals + 1,
+      gas: STARTING_STOCK.gas,
+    });
+  });
+
+  it("clears the remembered choice when the Worker leaves a dual hex", () => {
+    const next = resolveRound(workerOnDualHex("refinery"), {
+      a: { moves: [{ unitId: "a-worker", col: 2, row: 0 }], builds: [] },
+      b: { moves: [], builds: [] },
+    });
+
+    expect(unitById(next, "a-worker")).toMatchObject({ col: 2, row: 0 });
+    expect(unitById(next, "a-worker")?.gatherFrom).toBeUndefined();
+    expect(next.stock.a).toEqual(STARTING_STOCK);
   });
 });

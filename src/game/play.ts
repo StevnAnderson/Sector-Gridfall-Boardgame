@@ -6,8 +6,9 @@
  * mineral and gas nodes. Both players plan at the same time: any number of pieces
  * from one hex may march together to one adjacent hex, then both plans resolve
  * together. Allied armies merge, enemy-held hexes become conflicts, and conflicts
- * are fought out before the next round begins. Workers standing on a resource
- * node harvest at the end of the round.
+ * are fought out before the next round begins. Workers harvest at the end of the
+ * round from a Base (minerals) or Refinery (gas) on their hex. A hex holding both
+ * makes the Worker pick one; the choice is remembered until it moves again.
  *
  * This is deliberately framework-free so the movement/harvest rules can be
  * tested without React.
@@ -21,6 +22,9 @@ export type Player = "a" | "b";
 export type ResourceType = "minerals" | "gas";
 export type PlayStructureType = "base" | "refinery" | "barracks" | "factory";
 export type PlayUnitType = PlayStructureType | "worker" | "soldier";
+
+/** The two structures a Worker can harvest from. */
+export type GatherFrom = "base" | "refinery";
 
 /** Planning is the normal round. Battle pauses the round while conflicts resolve. */
 export type PlayPhase = "planning" | "battle";
@@ -43,6 +47,12 @@ export interface PlayUnit extends HexCoord {
   hp?: number;
   /** A unit may make one move per round. */
   moved: boolean;
+  /**
+   * Workers only. Which structure they were told to gather from when their hex
+   * holds both a Base and a Refinery. Absent means "not chosen" — the Worker
+   * falls back to the Base. Cleared when the Worker leaves a dual hex.
+   */
+  gatherFrom?: GatherFrom;
 }
 
 /** One unit's planned step for the coming round. */
@@ -66,6 +76,14 @@ export interface BuildOrder {
 export interface PlayerSubmission {
   moves: PlayMove[];
   builds: BuildOrder[];
+  /** Re-pick or confirm which structure a Worker gathers from. */
+  harvests?: HarvestChoice[];
+}
+
+/** Set a Worker's chosen structure for a hex holding both a Base and a Refinery. */
+export interface HarvestChoice {
+  unitId: string;
+  gatherFrom: GatherFrom;
 }
 
 /** Older callers submit a bare move list; both shapes are accepted. */
@@ -78,7 +96,9 @@ export interface RoundSubmissions {
 }
 
 export function normalizeSubmission(input: SubmissionInput): PlayerSubmission {
-  return Array.isArray(input) ? { moves: input, builds: [] } : input;
+  return Array.isArray(input)
+    ? { moves: input, builds: [], harvests: [] }
+    : { moves: input.moves, builds: input.builds ?? [], harvests: input.harvests ?? [] };
 }
 
 /** Everything a player can build from one selected piece. */
@@ -163,7 +183,12 @@ export interface PlayState {
 
 /** Everything a player can send during an online match. */
 export type PlayAction =
-  | { type: "submit"; moves: PlayMove[]; builds: BuildOrder[] }
+  | {
+      type: "submit";
+      moves: PlayMove[];
+      builds: BuildOrder[];
+      harvests?: HarvestChoice[];
+    }
   | { type: "forfeit" };
 
 export const MAP_COLS = 3;
@@ -270,6 +295,58 @@ export function unitById(state: PlayState, id: string): PlayUnit | undefined {
 /** Current HP, falling back to the codex value for older saved states. */
 export function unitHp(unit: PlayUnit): number {
   return Math.max(0, unit.hp ?? getDefinition(unit.typeId).hp);
+}
+
+/**
+ * Structures a Worker could gather from on a hex. Only the player's own Base
+ * and Refinery produce income; other structures and enemy buildings do not.
+ */
+export function gatherOptionsAt(
+  state: PlayState,
+  player: Player,
+  col: number,
+  row: number,
+): GatherFrom[] {
+  const kinds = new Set<PlayUnitType>();
+  for (const unit of state.units) {
+    if (unit.owner !== player || unit.col !== col || unit.row !== row) continue;
+    if (unit.typeId === "base" || unit.typeId === "refinery") {
+      kinds.add(unit.typeId);
+    }
+  }
+  return (["base", "refinery"] as GatherFrom[]).filter((kind) => kinds.has(kind));
+}
+
+/** Where one Worker will gather, or null when its hex has no producing structure. */
+export function gatherFor(
+  state: PlayState,
+  unit: PlayUnit,
+): { from: GatherFrom; resource: ResourceType } | null {
+  if (unit.typeId !== "worker") return null;
+  const options = gatherOptionsAt(state, unit.owner, unit.col, unit.row);
+  if (options.length === 0) return null;
+  const from: GatherFrom =
+    options.length === 1 ? options[0]! : unit.gatherFrom ?? "base";
+  return { from, resource: from === "base" ? "minerals" : "gas" };
+}
+
+/**
+ * The Worker's remembered choice once it stands on `col,row`. A single producing
+ * structure needs no choice; a dual hex keeps `chosen`, or the old choice when
+ * the Worker stayed put, and falls back to the Base.
+ */
+function gatherForPosition(
+  state: PlayState,
+  unit: PlayUnit,
+  col: number,
+  row: number,
+  chosen?: GatherFrom,
+  preserve = true,
+): GatherFrom | undefined {
+  const options = gatherOptionsAt(state, unit.owner, col, row);
+  if (options.length === 0) return undefined;
+  if (options.length === 1) return options[0];
+  return chosen ?? (preserve ? unit.gatherFrom : undefined) ?? "base";
 }
 
 /** True when the hex holds at least one piece from the other side. */
@@ -514,6 +591,31 @@ export function buildUnit(
   return { ...next, log: [...state.log, ...messages].slice(-10) };
 }
 
+/**
+ * Re-pick which structure a Worker gathers from on a dual hex. This is not an
+ * action: it does not spend the Worker's move. Only meaningful when the Worker's
+ * own hex holds both a Base and a Refinery.
+ */
+export function setGatherPreference(
+  state: PlayState,
+  player: Player,
+  unitId: string,
+  gatherFrom: GatherFrom,
+): PlayState {
+  if (state.winner || state.phase !== "planning") return state;
+  const unit = unitById(state, unitId);
+  if (!unit || unit.owner !== player || unit.typeId !== "worker") return state;
+  if (gatherOptionsAt(state, player, unit.col, unit.row).length < 2) return state;
+  if (unit.gatherFrom === gatherFrom) return state;
+
+  return {
+    ...state,
+    units: state.units.map((entry) =>
+      entry.id === unit.id ? { ...entry, gatherFrom } : entry,
+    ),
+  };
+}
+
 export function createInitialState(): PlayState {
   return {
     units: [
@@ -578,6 +680,7 @@ export function moveUnit(
   unitId: string,
   col: number,
   row: number,
+  gatherFrom?: GatherFrom,
 ): PlayState {
   const unit = unitById(state, unitId);
   if (!unit || !canMoveTo(state, unit, col, row)) return state;
@@ -586,9 +689,14 @@ export function moveUnit(
   const message = `${PLAYER_LABEL[unit.owner]} moved ${UNIT_LABEL[unit.typeId]} to ${tileLabel(col, row)}.`;
   return {
     ...state,
-    units: state.units.map((entry) =>
-      entry.id === unitId ? { ...entry, col, row, moved: true } : entry,
-    ),
+    units: state.units.map((entry) => {
+      if (entry.id !== unitId) return entry;
+      const moved: PlayUnit = { ...entry, col, row, moved: true };
+      if (entry.typeId === "worker") {
+        moved.gatherFrom = gatherForPosition(state, entry, col, row, gatherFrom, false);
+      }
+      return moved;
+    }),
     phase: "planning",
     conflicts: [],
     log: [...state.log, message].slice(-10),
@@ -604,6 +712,7 @@ export function moveUnits(
   unitIds: string[],
   col: number,
   row: number,
+  gatherFrom?: GatherFrom,
 ): PlayState {
   if (state.winner || state.phase !== "planning") return state;
 
@@ -641,11 +750,14 @@ export function moveUnits(
   const names = describeUnits(chosen);
   return {
     ...state,
-    units: state.units.map((unit) =>
-      chosen.some((entry) => entry.id === unit.id)
-        ? { ...unit, col, row, moved: true }
-        : unit,
-    ),
+    units: state.units.map((unit) => {
+      if (!chosen.some((entry) => entry.id === unit.id)) return unit;
+      const moved: PlayUnit = { ...unit, col, row, moved: true };
+      if (unit.typeId === "worker") {
+        moved.gatherFrom = gatherForPosition(state, unit, col, row, gatherFrom, false);
+      }
+      return moved;
+    }),
     phase: "planning",
     conflicts: [],
     log: [
@@ -660,8 +772,8 @@ export function harvestFor(state: PlayState, player: Player): Stock {
   const gained: Stock = { minerals: 0, gas: 0 };
   for (const unit of state.units) {
     if (unit.owner !== player || unit.typeId !== "worker") continue;
-    const tile = tileAt(unit.col, unit.row);
-    if (tile?.resource) gained[tile.resource] += 1;
+    const gather = gatherFor(state, unit);
+    if (gather) gained[gather.resource] += 1;
   }
   return gained;
 }
@@ -796,6 +908,35 @@ function planRound(state: PlayState, submissions: RoundSubmissions): PlannedRoun
     positions.set(entry.unit.id, { col: entry.move.col, row: entry.move.row });
   }
 
+  // Harvest choices arrive with the moves. A choice is only meaningful when the
+  // Worker's current hex or its destination holds both a Base and a Refinery.
+  const harvestChoices = new Map<string, GatherFrom>();
+  for (const player of ["a", "b"] as Player[]) {
+    const submission = player === "a" ? aSubmission : bSubmission;
+    for (const choice of submission.harvests ?? []) {
+      if (
+        !choice ||
+        (choice.gatherFrom !== "base" && choice.gatherFrom !== "refinery")
+      ) {
+        continue;
+      }
+      const unit = unitById(working, choice.unitId);
+      if (!unit || unit.owner !== player || unit.typeId !== "worker") continue;
+
+      const destination = positions.get(unit.id) ?? { col: unit.col, row: unit.row };
+      const current = gatherOptionsAt(working, player, unit.col, unit.row);
+      const arriving = gatherOptionsAt(
+        working,
+        player,
+        destination.col,
+        destination.row,
+      );
+      if (current.length > 1 || arriving.length > 1) {
+        harvestChoices.set(unit.id, choice.gatherFrom);
+      }
+    }
+  }
+
   const held = new Set<string>();
   const conflictsByHex = new Map<
     string,
@@ -873,7 +1014,25 @@ function planRound(state: PlayState, submissions: RoundSubmissions): PlannedRoun
 
   const units = working.units.map((unit) => {
     const position = positions.get(unit.id) ?? { col: unit.col, row: unit.row };
-    return { ...unit, col: position.col, row: position.row, moved: false };
+    const next: PlayUnit = {
+      ...unit,
+      col: position.col,
+      row: position.row,
+      moved: false,
+    };
+    if (unit.typeId === "worker") {
+      const movedHere =
+        position.col !== unit.col || position.row !== unit.row;
+      next.gatherFrom = gatherForPosition(
+        working,
+        unit,
+        position.col,
+        position.row,
+        harvestChoices.get(unit.id),
+        !movedHere,
+      );
+    }
+    return next;
   });
 
   const log: string[] = [...buildLog];
