@@ -80,35 +80,45 @@ function hexCenter(col: number, row: number): { x: number; y: number } {
   };
 }
 
-/** Selection is limited to pieces standing on one hex so they can march together. */
+/**
+ * Selection is limited to pieces standing on one hex so they can march
+ * together. A stacked row in the hex panel passes every piece it represents.
+ */
 function toggleSelectedIds(
   state: PlayState,
   current: string[],
-  unitId: string,
+  unitIds: string[],
 ): string[] {
-  const unit = unitById(state, unitId);
-  if (!unit) return current;
+  const units = unitIds
+    .map((id) => unitById(state, id))
+    .filter((unit): unit is PlayUnit => unit !== undefined);
+  if (units.length === 0) return current;
 
+  const [col, row] = [units[0]!.col, units[0]!.row];
   const otherHex = current.some((id) => {
     const other = unitById(state, id);
-    return other && (other.col !== unit.col || other.row !== unit.row);
+    return other && (other.col !== col || other.row !== row);
   });
-  if (otherHex) return [unitId];
+  if (otherHex) return [...unitIds];
 
   // Structures cannot march, and their window only opens for one piece, so a
   // structure is always selected on its own.
-  if (getDefinition(unit.typeId).kind === "structure") {
-    return current.includes(unitId) ? [] : [unitId];
+  const isStructure = units.some(
+    (unit) => getDefinition(unit.typeId).kind === "structure",
+  );
+  const groupSelected = unitIds.every((id) => current.includes(id));
+  if (isStructure) {
+    return groupSelected ? [] : [...unitIds];
   }
   const currentHasStructure = current.some((id) => {
     const other = unitById(state, id);
     return other && getDefinition(other.typeId).kind === "structure";
   });
-  if (currentHasStructure) return [unitId];
+  if (currentHasStructure) return [...unitIds];
 
-  return current.includes(unitId)
-    ? current.filter((id) => id !== unitId)
-    : [...current, unitId];
+  return groupSelected
+    ? current.filter((id) => !unitIds.includes(id))
+    : [...current, ...unitIds.filter((id) => !current.includes(id))];
 }
 
 function unitGroupLabel(state: PlayState, unitIds: string[]): string {
@@ -121,8 +131,21 @@ function unitGroupLabel(state: PlayState, unitIds: string[]): string {
   }
   if (counts.size === 0) return "no pieces";
   return [...counts.entries()]
-    .map(([name, count]) => `${count} ${name}${count === 1 ? "" : "s"}`)
+    .map(([name, count]) => (count === 1 ? name : `${name} x${count}`))
     .join(" + ");
+}
+
+/** Stack label for the hex panel, e.g. "Soldier x3" or "Worker (Base) x2". */
+function stackLabel(
+  typeId: PlayUnitType,
+  assignment: GatherFrom | null,
+  count: number,
+): string {
+  const base = UNIT_LABEL[typeId];
+  const name = assignment
+    ? `${base} (${assignment === "base" ? "Base" : "Refinery"})`
+    : base;
+  return count > 1 ? `${name} x${count}` : name;
 }
 
 type PlayMode = "starter" | ChessVariantId;
@@ -617,8 +640,8 @@ function OnlineStarter({
     setInspectedId(pending.tileId);
   };
 
-  const toggleSelection = (unitId: string) => {
-    setSelectedIds((current) => toggleSelectedIds(state, current, unitId));
+  const toggleSelection = (unitIds: string[]) => {
+    setSelectedIds((current) => toggleSelectedIds(state, current, unitIds));
   };
 
   const onTileClick = (tile: MapTile) => {
@@ -733,7 +756,7 @@ function OnlineStarter({
             draft={draft}
             builds={builds}
             harvests={harvests}
-            onToggle={toggleSelection}
+            onToggleGroup={toggleSelection}
             onBuild={addBuild}
           />
         </aside>
@@ -914,7 +937,9 @@ function OnlineStarter({
               <li>Both players plan at the same time.</li>
               <li>
                 Click one of your hexes to inspect it. The hex panel lists every
-                piece stacked there.
+                piece stacked there; identical pieces share a row such as
+                "Soldier x3" or "Worker (Base) x3", and clicking the row selects
+                them all.
               </li>
               <li>
                 Choose one or more Workers or Soldiers in the panel, then click a
@@ -1424,7 +1449,7 @@ function HexInspector({
   tile,
   viewer,
   selectedIds,
-  onToggle,
+  onToggleGroup,
   draft = [],
   builds = [],
   harvests = [],
@@ -1435,7 +1460,7 @@ function HexInspector({
   tile: MapTile | undefined;
   viewer: Player;
   selectedIds: string[];
-  onToggle: (unitId: string) => void;
+  onToggleGroup: (unitIds: string[]) => void;
   draft?: PlayMove[];
   builds?: BuildOrder[];
   harvests?: HarvestChoice[];
@@ -1482,6 +1507,44 @@ function HexInspector({
     selectedWorker.row === tile.row &&
     gatherOptionsAt(state, viewer, tile.col, tile.row).length > 1;
 
+  const workerAssignment = (unit: PlayUnit): GatherFrom | null => {
+    if (unit.typeId !== "worker") return null;
+    const order = draft.find((move) => move.unitId === unit.id);
+    const col = order?.col ?? unit.col;
+    const row = order?.row ?? unit.row;
+    const gatherOptions = gatherOptionsAt(state, unit.owner, col, row);
+    if (gatherOptions.length === 0) return null;
+    const choice = harvests.find(
+      (entry) => entry.unitId === unit.id,
+    )?.gatherFrom;
+    return gatherOptions.length === 1
+      ? gatherOptions[0] ?? "base"
+      : choice ?? unit.gatherFrom ?? "base";
+  };
+
+  // Mobile pieces of the same kind share one stacked row. Workers are grouped by
+  // the structure they gather from, so the stack shows "Worker (Base) x3".
+  // Structures stay one per row so each can still open its own build window.
+  const stackMap = new Map<
+    string,
+    { typeId: PlayUnitType; assignment: GatherFrom | null; units: PlayUnit[] }
+  >();
+  for (const unit of occupants) {
+    const structure = getDefinition(unit.typeId).kind === "structure";
+    const assignment = structure ? null : workerAssignment(unit);
+    const key = structure
+      ? `piece:${unit.id}`
+      : `${unit.typeId}:${assignment ?? ""}`;
+    const stack = stackMap.get(key) ?? {
+      typeId: unit.typeId,
+      assignment,
+      units: [],
+    };
+    stack.units.push(unit);
+    stackMap.set(key, stack);
+  }
+  const stacks = [...stackMap.values()];
+
   return (
     <section className="panel play-inspector">
       <div className="panel-head">
@@ -1490,8 +1553,8 @@ function HexInspector({
 
       {!tile ? (
         <p className="muted small">
-          Click a hex to inspect it. Your own hexes list every piece stacked
-          there.
+          Click a hex to inspect it. Identical pieces share one stacked row, and
+          clicking that row selects the whole stack.
         </p>
       ) : enemy && !revealEnemy ? (
         <p className="play-inspector-enemy">Occupied by enemy</p>
@@ -1511,64 +1574,96 @@ function HexInspector({
             {revealEnemy ? " · revealed by conflict" : ""}
           </p>
           <ul className="play-inspector-list">
-            {occupants.map((unit) => {
-              const order = draft.find((move) => move.unitId === unit.id);
-              const build = builds.find((entry) => entry.builderId === unit.id);
-              const selectable = canAct(unit);
-              const hp = unitHp(unit);
-              const maxHp = getDefinition(unit.typeId).hp;
-              const isStructure = getDefinition(unit.typeId).kind === "structure";
-              const gatherNote = (() => {
-                if (unit.typeId !== "worker") return "";
-                const col = order?.col ?? unit.col;
-                const row = order?.row ?? unit.row;
-                const gatherOptions = gatherOptionsAt(state, viewer, col, row);
-                if (gatherOptions.length === 0) return "";
-                const choice = harvests.find(
-                  (entry) => entry.unitId === unit.id,
-                )?.gatherFrom;
-                const from: GatherFrom =
-                  gatherOptions.length === 1
-                    ? gatherOptions[0] ?? "base"
-                    : choice ?? unit.gatherFrom ?? "base";
-                return ` · assigned to ${from === "base" ? "Base (◆)" : "Refinery (▲)"}`;
+            {stacks.map((stack) => {
+              const isStructure =
+                getDefinition(stack.typeId).kind === "structure";
+              const selectableIds = stack.units
+                .filter(canAct)
+                .map((unit) => unit.id);
+              const selected =
+                selectableIds.length > 0 &&
+                selectableIds.every((id) => selectedIds.includes(id));
+              const moveOrders = stack.units
+                .map((unit) => draft.find((move) => move.unitId === unit.id))
+                .filter((move): move is PlayMove => move !== undefined);
+              const building = stack.units
+                .map((unit) =>
+                  builds.find((entry) => entry.builderId === unit.id),
+                )
+                .filter((entry): entry is BuildOrder => entry !== undefined);
+              const note = (() => {
+                if (building.length > 0) {
+                  const names = [
+                    ...new Set(
+                      building.map((entry) => UNIT_LABEL[entry.typeId]),
+                    ),
+                  ];
+                  return `Building ${names.join(" + ")}`;
+                }
+                if (isStructure) {
+                  if (stack.typeId === "base") {
+                    return "Structure · cannot move · trains Workers";
+                  }
+                  if (stack.typeId === "barracks") {
+                    return "Structure · cannot move · trains Soldiers";
+                  }
+                  return "Structure · cannot move";
+                }
+                if (moveOrders.length > 0) {
+                  const destinations = new Set(
+                    moveOrders.map((move) => tileLabel(move.col, move.row)),
+                  );
+                  if (
+                    moveOrders.length === stack.units.length &&
+                    destinations.size === 1
+                  ) {
+                    return `Queued → ${[...destinations][0]}`;
+                  }
+                  return `${moveOrders.length} queued`;
+                }
+                const ready = stack.units.filter((unit) => !unit.moved).length;
+                if (ready === stack.units.length) return "Ready to move";
+                if (ready === 0) return "Already acted";
+                return `${ready} ready · ${stack.units.length - ready} acted`;
               })();
-              const note = build
-                ? `Building ${UNIT_LABEL[build.typeId]}`
-                : unit.typeId === "base"
-                  ? "Structure · cannot move · trains Workers"
-                  : unit.typeId === "barracks"
-                    ? "Structure · cannot move · trains Soldiers"
-                    : isStructure
-                      ? "Structure · cannot move"
-                      : unit.moved
-                        ? "Already acted"
-                        : order
-                          ? `Queued → ${tileLabel(order.col, order.row)}`
-                          : "Ready to move";
+              const hpValues = stack.units.map(unitHp);
+              const maxHp = getDefinition(stack.typeId).hp;
+              const damaged = hpValues.some((hp) => hp < maxHp);
+              const lowHp = Math.min(...hpValues);
+              const highHp = Math.max(...hpValues);
+              const hpNote = damaged
+                ? lowHp === highHp
+                  ? ` · ${lowHp}/${maxHp} HP`
+                  : ` · ${lowHp}–${highHp}/${maxHp} HP`
+                : "";
               return (
-                <li key={unit.id}>
+                <li
+                  key={`${stack.typeId}:${stack.assignment ?? stack.units[0]?.id}`}
+                >
                   <button
                     type="button"
-                    className={`play-piece${selectedIds.includes(unit.id) ? " is-selected" : ""}`}
-                    onClick={() => onToggle(unit.id)}
-                    disabled={!selectable}
+                    className={`play-piece${selected ? " is-selected" : ""}`}
+                    onClick={() => onToggleGroup(selectableIds)}
+                    disabled={selectableIds.length === 0}
                   >
                     <span
                       className="play-piece-glyph"
-                      style={{ color: typeColor(unit.typeId) }}
+                      style={{ color: typeColor(stack.typeId) }}
                       aria-hidden="true"
                     >
-                      {getDefinition(unit.typeId).glyph}
+                      {getDefinition(stack.typeId).glyph}
                     </span>
                     <span className="play-piece-body">
                       <strong className="play-piece-name">
-                        {UNIT_LABEL[unit.typeId]}
+                        {stackLabel(
+                          stack.typeId,
+                          stack.assignment,
+                          stack.units.length,
+                        )}
                       </strong>
                       <span className="play-piece-note">
                         {note}
-                        {gatherNote}
-                        {hp < maxHp ? ` · ${hp}/${maxHp} HP` : ""}
+                        {hpNote}
                       </span>
                     </span>
                   </button>
@@ -1722,8 +1817,8 @@ function StarterPlay() {
     setPendingGather(null);
   };
 
-  const toggleSelection = (unitId: string) => {
-    setSelectedIds((current) => toggleSelectedIds(state, current, unitId));
+  const toggleSelection = (unitIds: string[]) => {
+    setSelectedIds((current) => toggleSelectedIds(state, current, unitIds));
   };
 
   const onBuild = (builderId: string, typeId: PlayUnitType) => {
@@ -1875,7 +1970,7 @@ function StarterPlay() {
             viewer={state.active}
             selectedIds={selectedIds}
             disabled={state.phase === "battle"}
-            onToggle={toggleSelection}
+            onToggleGroup={toggleSelection}
             onBuild={onBuild}
           />
         </aside>

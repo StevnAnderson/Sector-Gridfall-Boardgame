@@ -64,13 +64,15 @@ matching screen gives way to the starter map: a large hexagon three hexes along
 each side, with Player A on the top edge and Player B on the bottom edge. The
 middle hex of each side carries a mineral node and a gas node. An occupied hex
 shows a dot in its owner's colour rather than every piece. Click one of your hexes
-to list everything stacked there in the hex panel on the left, select any number
-of Workers or Soldiers, then click a highlighted neighbour to queue the whole
-group's move. Allied hexes are valid destinations, so moving one army into another
-merges them; two allied groups can also meet on the same empty hex. Enemy-held
-hexes are valid destinations too: if the enemy vacates in the same round, your
-army moves in, but if the enemy stays the border turns red and the round pauses
-for the battle phase. Structures never move.
+to list everything stacked there in the hex panel on the left. Identical pieces
+share a row such as "Soldier x3", and Workers name their assigned structure such
+as "Worker (Base) x3" or "Worker (Refinery)"; clicking a row selects the whole
+stack. Select any number of Workers or Soldiers, then click a highlighted
+neighbour to queue the whole group's move. Allied hexes are valid destinations, so
+moving one army into another merges them; two allied groups can also meet on the
+same empty hex. Enemy-held hexes are valid destinations too: if the enemy vacates
+in the same round, your army moves in, but if the enemy stays the border turns red
+and the round pauses for the battle phase. Structures never move.
 
 Select a single Worker to open a build window for that hex: Refinery, Barracks and
 Factory become buildable as their prerequisites are owned. A Base trains Workers
