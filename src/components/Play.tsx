@@ -13,7 +13,6 @@ import {
   createInitialState,
   describeCost,
   endTurn,
-  gatherFor,
   gatherOptionsAt,
   harvestFor,
   moveUnits,
@@ -558,9 +557,6 @@ function OnlineStarter({
     if (submitted || state.phase === "battle") return;
     // One action per piece: a build replaces that piece's queued move.
     setDraft((current) => current.filter((move) => move.unitId !== builderId));
-    setHarvests((current) =>
-      current.filter((choice) => choice.unitId !== builderId),
-    );
     setBuilds((current) => [
       ...current.filter((order) => order.builderId !== builderId),
       { builderId, typeId },
@@ -841,23 +837,34 @@ function OnlineStarter({
               </p>
             ) : (
               <ul className="play-orders">
-                {orders.map(({ move, unit }) => (
-                  <li key={unit.id} className={`play-order owner-${unit.owner}`}>
-                    <span className="play-order-move">
-                      <strong>{UNIT_LABEL[unit.typeId]}</strong>{" "}
-                      {tileLabel(unit.col, unit.row)} → {tileLabel(move.col, move.row)}
-                    </span>
-                    <button
-                      className="play-order-remove"
-                      type="button"
-                      onClick={() => removeOrder(unit.id)}
-                      disabled={submitted}
-                      aria-label={`Remove order for ${UNIT_LABEL[unit.typeId]} at ${tileLabel(unit.col, unit.row)}`}
-                    >
-                      ×
-                    </button>
-                  </li>
-                ))}
+                {orders.map(({ move, unit }) => {
+                  const gather = harvests.find(
+                    (choice) => choice.unitId === unit.id,
+                  )?.gatherFrom;
+                  const gatherLabel =
+                    unit.typeId === "worker" && gather
+                      ? ` · gathers ${gather === "base" ? "◆ Base" : "▲ Refinery"}`
+                      : "";
+                  return (
+                    <li key={unit.id} className={`play-order owner-${unit.owner}`}>
+                      <span className="play-order-move">
+                        <strong>{UNIT_LABEL[unit.typeId]}</strong>{" "}
+                        {tileLabel(unit.col, unit.row)} →{" "}
+                        {tileLabel(move.col, move.row)}
+                        {gatherLabel}
+                      </span>
+                      <button
+                        className="play-order-remove"
+                        type="button"
+                        onClick={() => removeOrder(unit.id)}
+                        disabled={submitted}
+                        aria-label={`Remove order for ${UNIT_LABEL[unit.typeId]} at ${tileLabel(unit.col, unit.row)}`}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  );
+                })}
                 {buildOrders.map(({ order, unit }) => (
                   <li key={`build-${unit.id}`} className={`play-order owner-${unit.owner}`}>
                     <span className="play-order-move">
@@ -1461,9 +1468,6 @@ function HexInspector({
     <section className="panel play-inspector">
       <div className="panel-head">
         <h3>{tile ? `Hex ${tileLabel(tile.col, tile.row)}` : "Hex contents"}</h3>
-        {tile && !enemy && tile.resource && (
-          <span className="muted small">{tile.resource}</span>
-        )}
       </div>
 
       {!tile ? (
@@ -1474,9 +1478,7 @@ function HexInspector({
       ) : enemy && !revealEnemy ? (
         <p className="play-inspector-enemy">Occupied by enemy</p>
       ) : occupants.length === 0 ? (
-        <p className="muted small">
-          Empty hex{tile.resource ? ` with ${tile.resource}` : ""}.
-        </p>
+        <p className="muted small">Empty hex.</p>
       ) : (
         <>
           <p className="muted small">

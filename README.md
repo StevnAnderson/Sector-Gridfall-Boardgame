@@ -61,14 +61,15 @@ income calculator and a notes pad. Progress and notes are kept in
 **Play** — opens on a matching screen. One player clicks **Host Game** and shares
 the five-character code; the other enters it under **Join Game**. Once paired, the
 matching screen gives way to the starter map: three hex columns wide and five rows
-deep, with Player A on the top edge and Player B on the bottom edge. Each edge
-carries a mineral node and a gas node. An occupied hex shows a dot in its owner's
-colour rather than every piece. Click one of your hexes to list everything stacked
-there in the hex panel on the left, select any number of Workers or Soldiers, then
-click a highlighted neighbour to queue the whole group's move. Allied hexes are
-valid destinations, so moving one army into another merges them; two allied groups
-can also meet on the same empty hex. Enemy-held hexes are valid destinations too:
-if the enemy vacates in the same round, your army moves in, but if the enemy stays
+deep, with Player A on the top edge and Player B on the bottom edge. The side
+edges show the old mineral and gas nodes as scenery; income now comes from Base
+and Refinery structures. An occupied hex shows a dot in its owner's colour rather
+than every piece. Click one of your hexes to list everything stacked there in the
+hex panel on the left, select any number of Workers or Soldiers, then click a
+highlighted neighbour to queue the whole group's move. Allied hexes are valid
+destinations, so moving one army into another merges them; two allied groups can
+also meet on the same empty hex. Enemy-held hexes are valid destinations too: if
+the enemy vacates in the same round, your army moves in, but if the enemy stays
 the border turns red and the round pauses for the battle phase. Bases never move.
 
 Select a single Worker to open a build window for that hex: Refinery, Barracks and
@@ -82,10 +83,12 @@ submitted, construction resolves first, then uncontested moves, then every
 conflict is fought with the same battle engine as the Battle Lab. The host
 resolves the battle phase; the guest sees the conflict borders and waits. Damage
 persists between rounds, and a surviving defender structure keeps its hex even
-when every defending unit is gone. After the battles, every Worker standing on a
-node harvests one of that resource and the next round begins. Resources buy
-builds. **Forfeit** declares the opponent the winner and returns both players to
-matching.
+when every defending unit is gone. After the battles, every Worker on one of your
+Bases collects 1 mineral, and every Worker on one of your Refineries collects 1
+gas. When a hex holds both structures, the Worker gathers from the one chosen when
+it moved in; select that Worker and click its own hex to switch the choice for
+later rounds. The next round then begins. Resources buy builds. **Forfeit**
+declares the opponent the winner and returns both players to matching.
 
 Host and guest connect directly over WebRTC (signalled by the free PeerJS broker).
 Tabs in the same browser also pair over `BroadcastChannel`, so a code works offline
@@ -116,7 +119,10 @@ moves to async multiplayer or a server, those modules come along unchanged.
 Settled with the designer:
 
 - **Income** — a worker produces its structure's output: 1 mineral in a Base, 1 gas
-  in a Refinery. Unstaffed structures produce nothing.
+  in a Refinery. Unstaffed structures produce nothing, and enemy structures produce
+  nothing for you. When a hex holds both your Base and Refinery, the Worker uses the
+  structure chosen when it moved in; selecting the Worker and clicking its own hex
+  changes that choice for later rounds.
 - **Supply** — the printed card counts are hard per-player limits (12 workers, 12
   soldiers, 12 walkers, 9 artillery, 6 Bases, 8 Barracks, 6 Factories, 5 Refineries).
 - **Builds** — every card takes one turn.

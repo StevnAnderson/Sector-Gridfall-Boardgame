@@ -8,8 +8,11 @@ maps to a small, tested piece of `src/game/battle.ts`, `src/game/play.ts` or
 ## Settled
 
 **Income** — a worker produces whatever its structure does. One mineral per worker
-in a Base, one gas per worker in a Refinery. Unstaffed structures produce nothing.
-The Turn Flow income panel reflects exactly this.
+in a Base, one gas per worker in a Refinery. Unstaffed structures produce nothing,
+and only the worker owner's structures count. A hex holding both a Base and a
+Refinery uses the structure the Worker chose when it moved in; selecting the Worker
+and clicking its own hex re-picks the structure for later rounds. The Turn Flow
+income panel reflects exactly this.
 
 **Supply** — the printed card counts are a hard per-player limit:
 
@@ -78,12 +81,12 @@ untargetable cards.
 regardless of band; long range does not shoot two hexes away.
 
 **Play mode is a starter map, not the full game.** The Play tab uses a fixed 3×5
-odd-r hex grid with Player A on the top edge and Player B on the bottom edge, and
-one mineral node plus one gas node on each side edge. Any number of pieces from
-one side may stack on a hex. An occupied hex shows only a dot in its owner's
-colour; clicking one of your own hexes lists every piece in the left-hand hex
-panel, while an enemy hex reports only "Occupied by enemy" during planning.
-Conflict reveals the defending garrison.
+odd-r hex grid with Player A on the top edge and Player B on the bottom edge. The
+old mineral and gas nodes remain as scenery on the side edges, but income now comes
+from Base and Refinery structures. Any number of pieces from one side may stack on
+a hex. An occupied hex shows only a dot in its owner's colour; clicking one of your
+own hexes lists every piece in the left-hand hex panel, while an enemy hex reports
+only "Occupied by enemy" during planning. Conflict reveals the defending garrison.
 
 Rounds are simultaneous: from one hex, select any number of mobile pieces (Bases
 never move) and queue them to the same adjacent destination. Allied hexes and
@@ -97,9 +100,10 @@ retreats, automatic targeting), writes surviving HP back to the map, and the
 attacking survivors take the hex only when every defending unit is destroyed; a
 surviving defender structure keeps the hex. A head-on clash over an empty hex
 arbitrarily treats Player B as the defender. After the battle phase, each Worker
-on a resource node harvests one of that resource for its own side, and the round
-advances. Online conflict resolution is host-authoritative; practice resolves an
-attack immediately on click instead of planning it simultaneously.
+standing on its own Base collects one mineral and each Worker on its own Refinery
+collects one gas; a dual hex uses the structure chosen when the Worker moved in.
+The round then advances. Online conflict resolution is host-authoritative; practice
+resolves an attack immediately on click instead of planning it simultaneously.
 
 Construction is deliberately compressed into the same round. A selected Worker
 builds any structure on its own hex, and a selected Base trains a Worker; either
@@ -108,10 +112,10 @@ require any owned Base, and Factory requires any owned Barracks, so unlocks are
 per player rather than per hex. Costs are the codex costs — Base 8◆, Refinery 3◆,
 Barracks 5◆, Factory 6◆2▲, Worker 2◆ — and supply caps are the printed per-player
 counts. Each side starts with 4◆ and 0▲ so the first construction phase can do
-something. Build orders travel in the online Submit payload and are validated by
-the host; invalid or unaffordable orders are ignored like forged moves. The
-simplification is that builds complete immediately at resolution rather than
-advancing over a separate construction timer.
+something. Build orders and Base/Refinery harvest choices travel in the online
+Submit payload and are validated by the host; invalid or unaffordable orders are
+ignored like forged moves. The simplification is that builds complete immediately
+at resolution rather than advancing over a separate construction timer.
 
 The board is shared by two paired players: the host collects both submissions and
 resolves the round, while the guest sends its plan. Either side can forfeit.
