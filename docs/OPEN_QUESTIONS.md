@@ -113,7 +113,9 @@ click instead of planning it simultaneously.
 Construction is deliberately compressed into the same round. A selected Worker
 builds any structure on its own hex, a selected Base trains a Worker, and a
 selected Barracks trains a Soldier; either way the piece spends its action and
-cannot move that round. Refinery and Barracks require any owned Base, and Factory
+cannot move that round. A building Worker also does not gather income that round,
+and selecting a stack of Workers lets each one build in turn. Refinery and
+Barracks require any owned Base, and Factory
 requires any owned Barracks, so unlocks are per player rather than per hex. Costs
 are the codex costs — Base 8◆, Refinery 3◆, Barracks 5◆, Factory 6◆2▲, Worker
 2◆, Soldier 3◆ — and supply caps are the printed per-player counts. Each side

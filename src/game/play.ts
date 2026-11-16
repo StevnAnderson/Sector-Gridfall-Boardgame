@@ -54,6 +54,11 @@ export interface PlayUnit extends HexCoord {
   /** A unit may make one move per round. */
   moved: boolean;
   /**
+   * Set when the piece spent its action building or training. Builders keep
+   * their hex but neither move nor gather until the next round.
+   */
+  building?: boolean;
+  /**
    * Workers only. Which structure they were told to gather from when their hex
    * holds both a Base and a Refinery. Absent means "not chosen" — the Worker
    * falls back to the Base. Cleared when the Worker leaves a dual hex.
@@ -608,7 +613,9 @@ function applyBuildOrders(
       ...working,
       units: [
         ...working.units.map((unit) =>
-          unit.id === builder.id ? { ...unit, moved: true } : unit,
+          unit.id === builder.id
+            ? { ...unit, moved: true, building: true }
+            : unit,
         ),
         spawned,
       ],
@@ -834,6 +841,9 @@ export function harvestFor(state: PlayState, player: Player): Stock {
 
   for (const unit of state.units) {
     if (unit.owner !== player || unit.typeId !== "worker") continue;
+    // A Worker that built or trained this round spends the whole action; it
+    // does not also gather income.
+    if (unit.building) continue;
     const gather = gatherFor(state, unit);
     if (!gather) continue;
     const key = hexId(unit.col, unit.row);
@@ -876,7 +886,7 @@ export function endTurn(state: PlayState): PlayState {
   return {
     ...state,
     units: state.units.map((unit) =>
-      unit.owner === next ? { ...unit, moved: false } : unit,
+      unit.owner === next ? { ...unit, moved: false, building: false } : unit,
     ),
     stock: {
       ...state.stock,
@@ -1300,6 +1310,11 @@ function finishRound(
   const gainedA = harvestFor(movedState, "a");
   const gainedB = harvestFor(movedState, "b");
 
+  // Builders sat this round out; clear the marker so they act normally next round.
+  const freshUnits = units.map((unit) =>
+    unit.building ? { ...unit, building: false } : unit,
+  );
+
   const log = [...state.log, ...logLines];
   for (const player of ["a", "b"] as Player[]) {
     const gained = player === "a" ? gainedA : gainedB;
@@ -1311,6 +1326,7 @@ function finishRound(
 
   return {
     ...movedState,
+    units: freshUnits,
     turn: state.turn + 1,
     stock: {
       a: {

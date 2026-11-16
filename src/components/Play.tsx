@@ -140,12 +140,97 @@ function stackLabel(
   typeId: PlayUnitType,
   assignment: GatherFrom | null,
   count: number,
+  status: StackStatus = null,
 ): string {
   const base = UNIT_LABEL[typeId];
-  const name = assignment
-    ? `${base} (${assignment === "base" ? "Base" : "Refinery"})`
-    : base;
+  const name = status
+    ? `${base} (${status})`
+    : assignment
+      ? `${base} (${assignment === "base" ? "Base" : "Refinery"})`
+      : base;
   return count > 1 ? `${name} x${count}` : name;
+}
+
+type StackStatus = "moving" | "building" | null;
+
+interface UnitStack {
+  typeId: PlayUnitType;
+  assignment: GatherFrom | null;
+  status: StackStatus;
+  units: PlayUnit[];
+}
+
+/** The structure a Worker will gather from after its queued move, if any. */
+function gatherAssignmentFor(
+  state: PlayState,
+  unit: PlayUnit,
+  draft: PlayMove[],
+  harvests: HarvestChoice[],
+): GatherFrom | null {
+  if (unit.typeId !== "worker") return null;
+  const order = draft.find((move) => move.unitId === unit.id);
+  const col = order?.col ?? unit.col;
+  const row = order?.row ?? unit.row;
+  const options = gatherOptionsAt(state, unit.owner, col, row);
+  if (options.length === 0) return null;
+  if (options.length === 1) return options[0] ?? "base";
+  const choice = harvests.find((entry) => entry.unitId === unit.id)?.gatherFrom;
+  return choice ?? unit.gatherFrom ?? "base";
+}
+
+/**
+ * Group pieces from one hex into the rows shown in the inspector. Mobile pieces
+ * of the same kind share a row; Workers are separated by assignment, and—when
+ * `withStatus` is set—by whether they are moving or building this round.
+ */
+function buildStacks(
+  state: PlayState,
+  units: PlayUnit[],
+  draft: PlayMove[],
+  builds: BuildOrder[],
+  harvests: HarvestChoice[],
+  withStatus = false,
+): UnitStack[] {
+  const map = new Map<string, UnitStack>();
+  for (const unit of units) {
+    const structure = getDefinition(unit.typeId).kind === "structure";
+    const status: StackStatus =
+      withStatus && !structure
+        ? unit.building || builds.some((order) => order.builderId === unit.id)
+          ? "building"
+          : draft.some((move) => move.unitId === unit.id)
+            ? "moving"
+            : null
+        : null;
+    const assignment =
+      structure || status !== null
+        ? null
+        : gatherAssignmentFor(state, unit, draft, harvests);
+    const key = structure
+      ? `piece:${unit.id}`
+      : status !== null
+        ? `${unit.typeId}:${status}`
+        : `${unit.typeId}:${assignment ?? ""}`;
+    const stack = map.get(key) ?? {
+      typeId: unit.typeId,
+      assignment,
+      status,
+      units: [],
+    };
+    stack.units.push(unit);
+    map.set(key, stack);
+  }
+  return [...map.values()];
+}
+
+/** Selected stacks, split by kind and assignment, offered to a pending move. */
+function movementStacks(
+  state: PlayState,
+  units: PlayUnit[],
+  draft: PlayMove[],
+  harvests: HarvestChoice[],
+): UnitStack[] {
+  return buildStacks(state, units, draft, [], harvests);
 }
 
 type PlayMode = "starter" | ChessVariantId;
@@ -157,6 +242,14 @@ interface PendingGather {
   row: number;
   tileId: string;
   move: boolean;
+}
+
+/** A move waiting for the player to choose how many pieces leave the hex. */
+interface PendingMove {
+  tileId: string;
+  col: number;
+  row: number;
+  stacks: UnitStack[];
 }
 
 /**
@@ -509,6 +602,7 @@ function OnlineStarter({
   const [builds, setBuilds] = useState<BuildOrder[]>([]);
   const [harvests, setHarvests] = useState<HarvestChoice[]>([]);
   const [pendingGather, setPendingGather] = useState<PendingGather | null>(null);
+  const [pendingMove, setPendingMove] = useState<PendingMove | null>(null);
   const [submitted, setSubmitted] = useState(false);
 
   const me = match.player;
@@ -548,6 +642,7 @@ function OnlineStarter({
     setBuilds([]);
     setHarvests([]);
     setPendingGather(null);
+    setPendingMove(null);
     setSubmitted(false);
   }, [state.turn]);
 
@@ -560,6 +655,7 @@ function OnlineStarter({
       setBuilds([]);
       setHarvests([]);
       setPendingGather(null);
+      setPendingMove(null);
     }
   }, [state.phase]);
 
@@ -584,7 +680,8 @@ function OnlineStarter({
       ...current.filter((order) => order.builderId !== builderId),
       { builderId, typeId },
     ]);
-    setSelectedIds([]);
+    // Keep any other selected Workers so the next one can build too.
+    setSelectedIds((current) => current.filter((id) => id !== builderId));
   };
 
   /** Queue a group move, optionally recording each Worker's gather choice. */
@@ -617,6 +714,39 @@ function OnlineStarter({
     setSelectedIds([]);
     setInspectedId(tile.id);
     setPendingGather(null);
+    setPendingMove(null);
+  };
+
+  /** Move now, or ask for a Base/Refinery assignment when the hex offers both. */
+  const beginMove = (tile: MapTile, unitIds: string[]) => {
+    if (unitIds.length === 0) return;
+    const hasWorker = unitIds.some(
+      (id) => unitById(state, id)?.typeId === "worker",
+    );
+    const gatherOptions = gatherOptionsAt(state, me, tile.col, tile.row);
+    if (hasWorker && gatherOptions.length > 1) {
+      setPendingGather({
+        unitIds,
+        col: tile.col,
+        row: tile.row,
+        tileId: tile.id,
+        move: true,
+      });
+      setInspectedId(tile.id);
+      return;
+    }
+    queueMoves(unitIds, tile);
+  };
+
+  const confirmMoveCount = (counts: number[]) => {
+    const pending = pendingMove;
+    if (!pending) return;
+    const unitIds = pending.stacks.flatMap((stack, index) =>
+      stack.units.slice(0, counts[index] ?? stack.units.length).map((unit) => unit.id),
+    );
+    setPendingMove(null);
+    const tile = MAP_TILES.find((entry) => entry.id === pending.tileId);
+    if (tile) beginMove(tile, unitIds);
   };
 
   const chooseGather = (gatherFrom: GatherFrom) => {
@@ -678,20 +808,18 @@ function OnlineStarter({
       group.every((unit) => canUnitMoveTo(state, unit, tile.col, tile.row));
 
     if (canGroupMove) {
-      const hasWorker = group.some((unit) => unit.typeId === "worker");
-      const gatherOptions = gatherOptionsAt(state, me, tile.col, tile.row);
-      if (hasWorker && gatherOptions.length > 1) {
-        setPendingGather({
-          unitIds: group.map((unit) => unit.id),
+      const stacks = movementStacks(state, group, draft, harvests);
+      if (stacks.some((stack) => stack.units.length > 1)) {
+        setPendingMove({
+          tileId: tile.id,
           col: tile.col,
           row: tile.row,
-          tileId: tile.id,
-          move: true,
+          stacks,
         });
         setInspectedId(tile.id);
         return;
       }
-      queueMoves(group.map((unit) => unit.id), tile);
+      beginMove(tile, group.map((unit) => unit.id));
       return;
     }
 
@@ -705,6 +833,7 @@ function OnlineStarter({
     setSubmitted(true);
     setSelectedIds([]);
     setPendingGather(null);
+    setPendingMove(null);
     onSubmit(draft, builds, harvests);
   };
 
@@ -810,6 +939,15 @@ function OnlineStarter({
             />
           )}
 
+          {pendingMove && (
+            <MoveCountPrompt
+              stacks={pendingMove.stacks}
+              destination={tileLabel(pendingMove.col, pendingMove.row)}
+              onConfirm={confirmMoveCount}
+              onCancel={() => setPendingMove(null)}
+            />
+          )}
+
           <StarterBoard
             state={state}
             selectedIds={selectedIds}
@@ -829,7 +967,7 @@ function OnlineStarter({
                   : "The host will resolve the battles, then the next round begins."
                 : queuedCount > 0
                   ? `${queuedCount} order${queuedCount === 1 ? "" : "s"} queued. Workers harvest when both players submit.`
-                  : "Select one or more pieces on a hex, march them together, then submit. Workers harvest when the round resolves."}
+                  : "Select one or more pieces on a hex, march them together, then submit. Stacks ask how many march; Workers harvest when the round resolves."}
             </span>
             <div className="play-action-buttons">
               <button className="btn danger" type="button" onClick={forfeit}>
@@ -1444,6 +1582,97 @@ function GatherPrompt({
   );
 }
 
+function MoveCountPrompt({
+  stacks,
+  destination,
+  onConfirm,
+  onCancel,
+}: {
+  stacks: UnitStack[];
+  destination: string;
+  onConfirm: (counts: number[]) => void;
+  onCancel: () => void;
+}) {
+  const [counts, setCounts] = useState<number[]>(() =>
+    stacks.map((stack) => stack.units.length),
+  );
+  const total = counts.reduce((sum, count) => sum + count, 0);
+
+  const setCount = (index: number, next: number) => {
+    const stack = stacks[index];
+    if (!stack) return;
+    const clamped = Math.max(0, Math.min(stack.units.length, next));
+    setCounts((current) =>
+      current.map((count, position) =>
+        position === index ? clamped : count,
+      ),
+    );
+  };
+
+  return (
+    <section className="play-gather" aria-label="Choose how many pieces move">
+      <div className="panel-head">
+        <h3>How many move?</h3>
+        <span className="muted small">{destination}</span>
+      </div>
+      <p className="muted small">
+        Choose how many of each stack march to {destination}. The rest hold this
+        hex.
+      </p>
+      <ul className="play-move-count-list">
+        {stacks.map((stack, index) => {
+          const count = counts[index] ?? stack.units.length;
+          return (
+            <li key={`${stack.typeId}:${stack.assignment ?? index}`}>
+              <span className="play-move-count-label">
+                {stackLabel(
+                  stack.typeId,
+                  stack.assignment,
+                  stack.units.length,
+                )}
+              </span>
+              <span className="play-move-count-stepper">
+                <button
+                  className="btn ghost"
+                  type="button"
+                  onClick={() => setCount(index, count - 1)}
+                  disabled={count <= 0}
+                  aria-label={`Move one fewer ${UNIT_LABEL[stack.typeId]}`}
+                >
+                  −
+                </button>
+                <strong>{count}</strong>
+                <button
+                  className="btn ghost"
+                  type="button"
+                  onClick={() => setCount(index, count + 1)}
+                  disabled={count >= stack.units.length}
+                  aria-label={`Move one more ${UNIT_LABEL[stack.typeId]}`}
+                >
+                  +
+                </button>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="play-gather-buttons">
+        <button
+          className="btn primary"
+          type="button"
+          onClick={() => onConfirm(counts)}
+          disabled={total === 0}
+        >
+          Move {total}
+        </button>
+        <button className="btn ghost" type="button" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function HexInspector({
   state,
   tile,
@@ -1481,17 +1710,20 @@ function HexInspector({
     owner === viewer &&
     !disabled &&
     !unit.moved &&
+    !draft.some((move) => move.unitId === unit.id) &&
+    !builds.some((order) => order.builderId === unit.id) &&
     (getDefinition(unit.typeId).kind !== "structure" ||
       buildOptions(state, viewer, unit.id).length > 0);
   const hasSelectable = occupants.some(canAct);
   const selectedPieces = selectedIds
     .map((id) => unitById(state, id))
     .filter((unit): unit is PlayUnit => unit !== undefined);
-  const onlyPiece = selectedPieces.length === 1 ? selectedPieces[0] : undefined;
-  const builder =
-    !disabled && onlyPiece !== undefined && onlyPiece.owner === viewer
-      ? onlyPiece
-      : undefined;
+  const builder = selectedPieces.find(
+    (unit) =>
+      unit.owner === viewer &&
+      canAct(unit) &&
+      buildOptions(state, viewer, unit.id).length > 0,
+  );
   const options = builder ? buildOptions(state, viewer, builder.id) : [];
   const queuedBuild = builder
     ? builds.find((order) => order.builderId === builder.id)
@@ -1507,43 +1739,7 @@ function HexInspector({
     selectedWorker.row === tile.row &&
     gatherOptionsAt(state, viewer, tile.col, tile.row).length > 1;
 
-  const workerAssignment = (unit: PlayUnit): GatherFrom | null => {
-    if (unit.typeId !== "worker") return null;
-    const order = draft.find((move) => move.unitId === unit.id);
-    const col = order?.col ?? unit.col;
-    const row = order?.row ?? unit.row;
-    const gatherOptions = gatherOptionsAt(state, unit.owner, col, row);
-    if (gatherOptions.length === 0) return null;
-    const choice = harvests.find(
-      (entry) => entry.unitId === unit.id,
-    )?.gatherFrom;
-    return gatherOptions.length === 1
-      ? gatherOptions[0] ?? "base"
-      : choice ?? unit.gatherFrom ?? "base";
-  };
-
-  // Mobile pieces of the same kind share one stacked row. Workers are grouped by
-  // the structure they gather from, so the stack shows "Worker (Base) x3".
-  // Structures stay one per row so each can still open its own build window.
-  const stackMap = new Map<
-    string,
-    { typeId: PlayUnitType; assignment: GatherFrom | null; units: PlayUnit[] }
-  >();
-  for (const unit of occupants) {
-    const structure = getDefinition(unit.typeId).kind === "structure";
-    const assignment = structure ? null : workerAssignment(unit);
-    const key = structure
-      ? `piece:${unit.id}`
-      : `${unit.typeId}:${assignment ?? ""}`;
-    const stack = stackMap.get(key) ?? {
-      typeId: unit.typeId,
-      assignment,
-      units: [],
-    };
-    stack.units.push(unit);
-    stackMap.set(key, stack);
-  }
-  const stacks = [...stackMap.values()];
+  const stacks = buildStacks(state, occupants, draft, builds, harvests, true);
 
   return (
     <section className="panel play-inspector">
@@ -1659,6 +1855,7 @@ function HexInspector({
                           stack.typeId,
                           stack.assignment,
                           stack.units.length,
+                          stack.status,
                         )}
                       </strong>
                       <span className="play-piece-note">
@@ -1685,7 +1882,7 @@ function HexInspector({
                 ? "Click this hex again to switch which structure this Worker gathers from."
                 : selectedIds.length > 0
                   ? `${selectedIds.length} selected. Click a highlighted neighbour to march the group together.`
-                  : "Select one or more pieces, then click a highlighted neighbouring hex. Select a Worker to build, or a Base/Barracks to train."}
+                  : "Select one or more pieces, then click a highlighted neighbouring hex. Select a Worker or a stack to build, or a Base/Barracks to train."}
             </p>
           )}
           {revealEnemy && (
@@ -1793,6 +1990,7 @@ function StarterPlay() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [inspectedId, setInspectedId] = useState<string | null>(null);
   const [pendingGather, setPendingGather] = useState<PendingGather | null>(null);
+  const [pendingMove, setPendingMove] = useState<PendingMove | null>(null);
 
   const selectedUnits = selectedIds
     .map((id) => unitById(state, id))
@@ -1808,6 +2006,7 @@ function StarterPlay() {
   useEffect(() => {
     setSelectedIds([]);
     setPendingGather(null);
+    setPendingMove(null);
   }, [state.active]);
 
   const reset = () => {
@@ -1815,6 +2014,7 @@ function StarterPlay() {
     setSelectedIds([]);
     setInspectedId(null);
     setPendingGather(null);
+    setPendingMove(null);
   };
 
   const toggleSelection = (unitIds: string[]) => {
@@ -1825,7 +2025,8 @@ function StarterPlay() {
     const next = buildUnit(state, state.active, builderId, typeId);
     if (next !== state) {
       setState(next);
-      setSelectedIds([]);
+      // Keep any other selected Workers so the next one can build too.
+      setSelectedIds((current) => current.filter((id) => id !== builderId));
     }
   };
 
@@ -1864,6 +2065,51 @@ function StarterPlay() {
     setPendingGather(null);
   };
 
+  /** Move the group now, asking for a gather assignment when the hex offers both. */
+  const beginMove = (tile: MapTile, unitIds: string[]) => {
+    if (unitIds.length === 0) return;
+    const hasWorker = unitIds.some(
+      (id) => unitById(state, id)?.typeId === "worker",
+    );
+    const gatherOptions = gatherOptionsAt(
+      state,
+      state.active,
+      tile.col,
+      tile.row,
+    );
+    if (hasWorker && gatherOptions.length > 1) {
+      setPendingGather({
+        unitIds,
+        col: tile.col,
+        row: tile.row,
+        tileId: tile.id,
+        move: true,
+      });
+      setInspectedId(tile.id);
+      return;
+    }
+
+    const next = moveUnits(state, unitIds, tile.col, tile.row);
+    if (next !== state) {
+      setState(next);
+      setSelectedIds([]);
+      setInspectedId(tile.id);
+    }
+  };
+
+  const confirmMoveCount = (counts: number[]) => {
+    const pending = pendingMove;
+    if (!pending) return;
+    const unitIds = pending.stacks.flatMap((stack, index) =>
+      stack.units
+        .slice(0, counts[index] ?? stack.units.length)
+        .map((unit) => unit.id),
+    );
+    setPendingMove(null);
+    const tile = MAP_TILES.find((entry) => entry.id === pending.tileId);
+    if (tile) beginMove(tile, unitIds);
+  };
+
   const onTileClick = (tile: MapTile) => {
     if (state.phase === "battle") {
       setInspectedId(tile.id);
@@ -1897,36 +2143,21 @@ function StarterPlay() {
       group.every((unit) => canMoveTo(state, unit, tile.col, tile.row));
 
     if (canGroupMove) {
-      const hasWorker = group.some((unit) => unit.typeId === "worker");
-      const gatherOptions = gatherOptionsAt(
-        state,
-        state.active,
-        tile.col,
-        tile.row,
-      );
-      if (hasWorker && gatherOptions.length > 1) {
-        setPendingGather({
-          unitIds: group.map((unit) => unit.id),
+      const stacks = movementStacks(state, group, [], []);
+      if (stacks.some((stack) => stack.units.length > 1)) {
+        setPendingMove({
+          tileId: tile.id,
           col: tile.col,
           row: tile.row,
-          tileId: tile.id,
-          move: true,
+          stacks,
         });
         setInspectedId(tile.id);
         return;
       }
-
-      const next = moveUnits(
-        state,
+      beginMove(
+        tile,
         group.map((unit) => unit.id),
-        tile.col,
-        tile.row,
       );
-      if (next !== state) {
-        setState(next);
-        setSelectedIds([]);
-        setInspectedId(tile.id);
-      }
       return;
     }
 
@@ -2011,6 +2242,15 @@ function StarterPlay() {
             />
           )}
 
+          {pendingMove && (
+            <MoveCountPrompt
+              stacks={pendingMove.stacks}
+              destination={tileLabel(pendingMove.col, pendingMove.row)}
+              onConfirm={confirmMoveCount}
+              onCancel={() => setPendingMove(null)}
+            />
+          )}
+
           <StarterBoard
             state={state}
             selectedIds={selectedIds}
@@ -2053,11 +2293,14 @@ function StarterPlay() {
             <ul className="play-help">
               <li>
                 Click one of your hexes to inspect it, then select one or more
-                Workers or Soldiers from the hex panel.
+                Workers or Soldiers from the hex panel. Identical pieces share a
+                stacked row such as "Soldier x3" or "Worker (Base) x3".
               </li>
               <li>
-                Click a highlighted neighbouring hex to move the whole group.
-                Any number of allied pieces can share a hex.
+                Click a highlighted neighbouring hex to move the selected
+                stacks. When a stack holds more than one piece, a prompt asks
+                how many march; the movers show "(moving)" and the rest hold the
+                hex. Any number of allied pieces can share a hex.
               </li>
               <li>
                 Allied hexes are valid destinations, so armies can merge. Two
@@ -2074,9 +2317,10 @@ function StarterPlay() {
                 selected Base trains Workers and a Barracks trains Soldiers.
               </li>
               <li>
-                Select a single Worker to build a structure on its hex. A Base
-                unlocks Refinery and Barracks; a Barracks unlocks the Factory.
-                Building uses the piece's action.
+                Select a Worker or a stack of Workers to build a structure on the
+                hex. A Base unlocks Refinery and Barracks; a Barracks unlocks the
+                Factory. Each builder spends its action and shows "(building)";
+                that Worker can neither move nor gather that round.
               </li>
               <li>
                 Node hexes sit at the middle of each side. A Base on a mineral

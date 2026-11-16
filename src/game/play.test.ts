@@ -651,6 +651,29 @@ describe("construction and training", () => {
     expect(next.stock.a.minerals).toBe(STARTING_STOCK.minerals - 3);
   });
 
+  it("keeps a building Worker out of the harvest for that round", () => {
+    const state = createInitialState();
+    const onBase: PlayState = {
+      ...state,
+      units: state.units.map((unit) =>
+        unit.id === "a-worker" ? { ...unit, col: 2, row: 0 } : unit,
+      ),
+    };
+    expect(harvestFor(onBase, "a")).toEqual({ minerals: 1, gas: 0 });
+
+    const built = buildUnit(onBase, "a", "a-worker", "refinery");
+    expect(harvestFor(built, "a")).toEqual({ minerals: 0, gas: 0 });
+
+    const next = resolveRound(onBase, {
+      a: { moves: [], builds: [{ builderId: "a-worker", typeId: "refinery" }] },
+      b: { moves: [], builds: [] },
+    });
+    // 4◆ − 3◆ for the Refinery, with no mineral gathered by the builder.
+    expect(next.stock.a.minerals).toBe(STARTING_STOCK.minerals - 3);
+    expect(unitById(next, "a-worker")?.moved).toBe(false);
+    expect(unitById(next, "a-worker")?.building).toBe(false);
+  });
+
   it("lists build window options for Workers and Bases only", () => {
     const state = createInitialState();
     const workerOptions = buildOptions(state, "a", "a-worker");

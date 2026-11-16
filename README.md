@@ -68,17 +68,20 @@ to list everything stacked there in the hex panel on the left. Identical pieces
 share a row such as "Soldier x3", and Workers name their assigned structure such
 as "Worker (Base) x3" or "Worker (Refinery)"; clicking a row selects the whole
 stack. Select any number of Workers or Soldiers, then click a highlighted
-neighbour to queue the whole group's move. Allied hexes are valid destinations, so
+neighbour to queue the whole group's move. When a stack has more than one piece,
+a prompt asks how many of that stack march; the rest hold the hex, and the movers
+are labelled `(moving)` in the hex panel. Allied hexes are valid destinations, so
 moving one army into another merges them; two allied groups can also meet on the
 same empty hex. Enemy-held hexes are valid destinations too: if the enemy vacates
 in the same round, your army moves in, but if the enemy stays the border turns red
 and the round pauses for the battle phase. Structures never move.
 
-Select a single Worker to open a build window for that hex: Refinery, Barracks and
-Factory become buildable as their prerequisites are owned. A Base trains Workers
-and a Barracks trains Soldiers. The selected piece spends its action for the
-round, so it cannot also move. Build orders are queued alongside moves and shown
-on the board and in the Orders panel until you submit.
+Select a Worker or a stack of Workers to open a build window for that hex:
+Refinery, Barracks and Factory become buildable as their prerequisites are owned.
+A Base trains Workers and a Barracks trains Soldiers. The selected piece spends
+its action for the round, so it cannot also move or gather income. Build orders
+are queued alongside moves and shown on the board and in the Orders panel until
+you submit.
 
 Both players plan at the same time, then click **Submit**. When both sides have
 submitted, construction resolves first, then uncontested moves, then every

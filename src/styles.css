@@ -2321,6 +2321,48 @@ textarea {
   gap: 8px;
 }
 
+.play-move-count-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.play-move-count-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-2);
+  font-size: 12px;
+}
+
+.play-move-count-label {
+  font-weight: 600;
+}
+
+.play-move-count-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.play-move-count-stepper .btn {
+  min-width: 28px;
+  padding: 2px 8px;
+  line-height: 1.2;
+}
+
+.play-move-count-stepper strong {
+  min-width: 16px;
+  text-align: center;
+}
+
 .play-orders {
   display: flex;
   flex-direction: column;
