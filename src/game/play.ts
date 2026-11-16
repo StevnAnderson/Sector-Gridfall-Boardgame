@@ -1,14 +1,19 @@
 /**
- * Play-mode state for the small starter map.
+ * Play-mode state for the starter map.
  *
- * The board is three hex columns wide and five rows deep. Player A starts on the
- * top edge and Player B on the bottom edge; the left and right edges carry the
- * mineral and gas nodes. Both players plan at the same time: any number of pieces
- * from one hex may march together to one adjacent hex, then both plans resolve
- * together. Allied armies merge, enemy-held hexes become conflicts, and conflicts
- * are fought out before the next round begins. Workers harvest at the end of the
- * round from a Base (minerals) or Refinery (gas) on their hex. A hex holding both
- * makes the Worker pick one; the choice is remembered until it moves again.
+ * The board is a large hexagon three hexes along each side: nineteen hexes in a
+ * pointy-top odd-r grid. The middle hex of each side carries both a mineral and a
+ * gas node. Player A starts on the top edge and Player B on the bottom edge. Both
+ * players plan at the same time: any number of pieces from one hex may march
+ * together to one adjacent hex, then both plans resolve together. Allied armies
+ * merge, enemy-held hexes become conflicts, and conflicts are fought out before
+ * the next round begins.
+ *
+ * Workers harvest at the end of the round. A Base on a mineral node turns up to
+ * three assigned Workers into minerals at 1 each; a Refinery on a gas node does
+ * the same for gas. A hex holding both structures makes the Worker pick one; the
+ * choice is remembered until it moves again. Structures off a node produce
+ * nothing, and extra Workers beyond the cap add nothing.
  *
  * This is deliberately framework-free so the movement/harvest rules can be
  * tested without React.
@@ -36,7 +41,8 @@ export interface HexCoord {
 
 export interface MapTile extends HexCoord {
   id: string;
-  resource: ResourceType | null;
+  /** Nodes on this hex. A side-centre hex carries both mineral and gas nodes. */
+  resources: ResourceType[];
 }
 
 export interface PlayUnit extends HexCoord {
@@ -191,8 +197,16 @@ export type PlayAction =
     }
   | { type: "forfeit" };
 
-export const MAP_COLS = 3;
+/**
+ * Bounding box of the hexagon. Not every coordinate in the box is on the board:
+ * the six gaps at (0,0), (4,0), (4,1), (4,3), (0,4) and (4,4) are cut off,
+ * leaving a nineteen-hex large hex three hexes along each side.
+ */
+export const MAP_COLS = 5;
 export const MAP_ROWS = 5;
+
+/** One structure can turn at most this many assigned Workers into resources. */
+export const HARVEST_CAP = 3;
 
 /** A small opening stock so the first construction phase has something to spend. */
 export const STARTING_STOCK: Stock = { minerals: 4, gas: 0 };
@@ -211,39 +225,54 @@ export const UNIT_LABEL: Record<PlayUnitType, string> = {
   soldier: "Soldier",
 };
 
-const RESOURCES: { col: number; row: number; resource: ResourceType }[] = [
-  // Both side edges carry one mineral and one gas node.
-  { col: 0, row: 1, resource: "minerals" },
-  { col: 2, row: 1, resource: "gas" },
-  { col: 0, row: 3, resource: "gas" },
-  { col: 2, row: 3, resource: "minerals" },
-];
-
 export function hexId(col: number, row: number): string {
   return `${col},${row}`;
 }
 
 export function tileLabel(col: number, row: number): string {
-  return `${"ABC"[col] ?? "?"}${row + 1}`;
+  return `${"ABCDE"[col] ?? "?"}${row + 1}`;
 }
 
-export function inBounds(col: number, row: number): boolean {
-  return col >= 0 && col < MAP_COLS && row >= 0 && row < MAP_ROWS;
+/** Cube distance from the centre of the board, expressed in odd-r offset. */
+function hexDistanceFromCentre(col: number, row: number): number {
+  const q = col - Math.floor(row / 2);
+  const r = row;
+  const dq = q - 1;
+  const dr = r - 2;
+  return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(dq + dr));
 }
+
+/** The middle hex of each of the six sides of the large hex. */
+const RESOURCE_NODES: HexCoord[] = [
+  { col: 2, row: 0 },
+  { col: 3, row: 1 },
+  { col: 3, row: 3 },
+  { col: 2, row: 4 },
+  { col: 0, row: 3 },
+  { col: 0, row: 1 },
+];
 
 export const MAP_TILES: MapTile[] = Array.from({ length: MAP_ROWS }, (_, row) =>
-  Array.from({ length: MAP_COLS }, (_, col) => {
-    const resource = RESOURCES.find(
-      (entry) => entry.col === col && entry.row === row,
-    )?.resource;
-    return {
-      id: hexId(col, row),
-      col,
-      row,
-      resource: resource ?? null,
-    };
-  }),
-).flat();
+  Array.from({ length: MAP_COLS }, (_, col) => ({ col, row })),
+)
+  .flat()
+  .filter(({ col, row }) => hexDistanceFromCentre(col, row) <= 2)
+  .map(({ col, row }) => ({
+    id: hexId(col, row),
+    col,
+    row,
+    resources: RESOURCE_NODES.some(
+      (node) => node.col === col && node.row === row,
+    )
+      ? (["minerals", "gas"] as ResourceType[])
+      : [],
+  }));
+
+const MAP_TILE_IDS = new Set(MAP_TILES.map((tile) => tile.id));
+
+export function inBounds(col: number, row: number): boolean {
+  return MAP_TILE_IDS.has(hexId(col, row));
+}
 
 export function tileAt(col: number, row: number): MapTile | undefined {
   if (!inBounds(col, row)) return undefined;
@@ -297,9 +326,27 @@ export function unitHp(unit: PlayUnit): number {
   return Math.max(0, unit.hp ?? getDefinition(unit.typeId).hp);
 }
 
+/** Producing Base and Refinery counts on one hex for the given player. */
+function producingStructuresAt(
+  state: PlayState,
+  player: Player,
+  col: number,
+  row: number,
+): Record<GatherFrom, number> {
+  const counts: Record<GatherFrom, number> = { base: 0, refinery: 0 };
+  const nodes = tileAt(col, row)?.resources ?? [];
+  for (const unit of state.units) {
+    if (unit.owner !== player || unit.col !== col || unit.row !== row) continue;
+    if (unit.typeId === "base" && nodes.includes("minerals")) counts.base += 1;
+    if (unit.typeId === "refinery" && nodes.includes("gas")) counts.refinery += 1;
+  }
+  return counts;
+}
+
 /**
  * Structures a Worker could gather from on a hex. Only the player's own Base
- * and Refinery produce income; other structures and enemy buildings do not.
+ * on a mineral node and Refinery on a gas node produce income; structures off
+ * a node, other structures and enemy buildings do not.
  */
 export function gatherOptionsAt(
   state: PlayState,
@@ -307,14 +354,10 @@ export function gatherOptionsAt(
   col: number,
   row: number,
 ): GatherFrom[] {
-  const kinds = new Set<PlayUnitType>();
-  for (const unit of state.units) {
-    if (unit.owner !== player || unit.col !== col || unit.row !== row) continue;
-    if (unit.typeId === "base" || unit.typeId === "refinery") {
-      kinds.add(unit.typeId);
-    }
-  }
-  return (["base", "refinery"] as GatherFrom[]).filter((kind) => kinds.has(kind));
+  const counts = producingStructuresAt(state, player, col, row);
+  return (["base", "refinery"] as GatherFrom[]).filter(
+    (kind) => counts[kind] > 0,
+  );
 }
 
 /** Where one Worker will gather, or null when its hex has no producing structure. */
@@ -382,11 +425,22 @@ export function describeCost(cost: Cost): string {
   return parts.length > 0 ? parts.join(" ") : "free";
 }
 
+/** Units a structure can train on its own hex. */
+const TRAINED_BY: Partial<Record<PlayUnitType, PlayUnitType>> = {
+  base: "worker",
+  barracks: "soldier",
+};
+
+const TRAIN_REASON: Partial<Record<PlayUnitType, string>> = {
+  base: "Bases train Workers",
+  barracks: "Barracks train Soldiers",
+};
+
 /**
  * Why a particular piece can or cannot build a particular card. Workers build
- * structures; Bases train Workers. Unlocks are per player: owning a Base
- * anywhere lets any Worker build a Refinery or Barracks, and owning a Barracks
- * unlocks the Factory.
+ * structures; Bases train Workers and Barracks train Soldiers. Unlocks are per
+ * player: owning a Base anywhere lets any Worker build a Refinery or Barracks,
+ * and owning a Barracks unlocks the Factory.
  */
 export function canBuild(
   state: PlayState,
@@ -409,13 +463,14 @@ export function canBuild(
     return { ok: false, reason: "Already acted this round" };
   }
 
+  const trained = TRAINED_BY[builder.typeId];
   if (builder.typeId === "worker") {
     if (def.kind !== "structure") {
       return { ok: false, reason: "Workers build structures" };
     }
-  } else if (builder.typeId === "base") {
-    if (def.id !== "worker") {
-      return { ok: false, reason: "Bases train Workers" };
+  } else if (trained !== undefined) {
+    if (def.id !== trained) {
+      return { ok: false, reason: TRAIN_REASON[builder.typeId] ?? "Cannot train" };
     }
   } else {
     return { ok: false, reason: "This piece cannot build" };
@@ -457,11 +512,12 @@ export function buildOptions(
   const builder = unitById(state, builderId);
   if (!builder || builder.owner !== player) return [];
 
+  const trained = TRAINED_BY[builder.typeId];
   const defs =
     builder.typeId === "worker"
       ? CARD_DEFINITIONS.filter((def) => def.kind === "structure")
-      : builder.typeId === "base"
-        ? CARD_DEFINITIONS.filter((def) => def.id === "worker")
+      : trained !== undefined
+        ? CARD_DEFINITIONS.filter((def) => def.id === trained)
         : [];
   if (defs.length === 0) return [];
 
@@ -565,7 +621,7 @@ function applyBuildOrders(
       },
     };
     messages.push(
-      `${PLAYER_LABEL[player]} built ${def.name} at ${tileLabel(builder.col, builder.row)}.`,
+      `${PLAYER_LABEL[player]} ${def.kind === "unit" ? "trained" : "built"} ${def.name} at ${tileLabel(builder.col, builder.row)}.`,
     );
   }
 
@@ -619,12 +675,12 @@ export function setGatherPreference(
 export function createInitialState(): PlayState {
   return {
     units: [
-      { id: "a-base", owner: "a", typeId: "base", col: 1, row: 0, moved: false },
-      { id: "a-worker", owner: "a", typeId: "worker", col: 0, row: 0, moved: false },
-      { id: "a-soldier", owner: "a", typeId: "soldier", col: 2, row: 0, moved: false },
-      { id: "b-base", owner: "b", typeId: "base", col: 1, row: 4, moved: false },
-      { id: "b-worker", owner: "b", typeId: "worker", col: 2, row: 4, moved: false },
-      { id: "b-soldier", owner: "b", typeId: "soldier", col: 0, row: 4, moved: false },
+      { id: "a-base", owner: "a", typeId: "base", col: 2, row: 0, moved: false },
+      { id: "a-worker", owner: "a", typeId: "worker", col: 1, row: 0, moved: false },
+      { id: "a-soldier", owner: "a", typeId: "soldier", col: 3, row: 0, moved: false },
+      { id: "b-base", owner: "b", typeId: "base", col: 2, row: 4, moved: false },
+      { id: "b-worker", owner: "b", typeId: "worker", col: 1, row: 4, moved: false },
+      { id: "b-soldier", owner: "b", typeId: "soldier", col: 3, row: 4, moved: false },
     ],
     active: "a",
     turn: 1,
@@ -767,14 +823,33 @@ export function moveUnits(
   };
 }
 
-/** Resources the given player's Workers would collect if the turn ended now. */
+/**
+ * Resources the given player's Workers would collect if the turn ended now.
+ * Each Base/Refinery on a matching node turns at most HARVEST_CAP assigned
+ * Workers into resources; extra Workers on the same structure add nothing.
+ */
 export function harvestFor(state: PlayState, player: Player): Stock {
   const gained: Stock = { minerals: 0, gas: 0 };
+  const assigned = new Map<string, Record<GatherFrom, number>>();
+
   for (const unit of state.units) {
     if (unit.owner !== player || unit.typeId !== "worker") continue;
     const gather = gatherFor(state, unit);
-    if (gather) gained[gather.resource] += 1;
+    if (!gather) continue;
+    const key = hexId(unit.col, unit.row);
+    const counts = assigned.get(key) ?? { base: 0, refinery: 0 };
+    counts[gather.from] += 1;
+    assigned.set(key, counts);
   }
+
+  for (const [key, counts] of assigned) {
+    const [col, row] = key.split(",").map(Number);
+    if (col === undefined || row === undefined) continue;
+    const sites = producingStructuresAt(state, player, col, row);
+    gained.minerals += Math.min(counts.base, sites.base * HARVEST_CAP);
+    gained.gas += Math.min(counts.refinery, sites.refinery * HARVEST_CAP);
+  }
+
   return gained;
 }
 

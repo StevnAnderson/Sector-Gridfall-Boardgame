@@ -81,7 +81,8 @@ export const CARD_DEFINITIONS: CardDefinition[] = [
     supply: 6,
     produces: ["workers", "minerals"],
     unlocks: ["refinery", "barracks"],
-    blurb: "Your foothold. Produces Workers and minerals. Losing it ends your game.",
+    blurb:
+      "Your foothold. Trains Workers and, on a mineral node, turns up to 3 assigned Workers into minerals. Losing it ends your game.",
     glyph: "⌂",
   },
   {
@@ -95,7 +96,8 @@ export const CARD_DEFINITIONS: CardDefinition[] = [
     threatening: false,
     supply: 5,
     produces: ["gas"],
-    blurb: "Gives +1 gas income. Requires a Worker garrison to operate.",
+    blurb:
+      "On a gas node, turns up to 3 assigned Workers into gas. Off a node it produces nothing.",
     glyph: "◈",
   },
   {
@@ -110,7 +112,7 @@ export const CARD_DEFINITIONS: CardDefinition[] = [
     supply: 8,
     produces: ["soldiers", "walkers"],
     unlocks: ["factory"],
-    blurb: "Trains Soldiers and Walkers. Unlocks the Factory.",
+    blurb: "Trains Soldiers on its own hex. Unlocks the Factory.",
     glyph: "▥",
   },
   {

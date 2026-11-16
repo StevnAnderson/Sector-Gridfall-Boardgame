@@ -27,7 +27,7 @@ const PHASES: Phase[] = [
         id: "income",
         title: "Collect income",
         detail:
-          "One mineral per worker in your Base. One gas per worker in a Refinery. Garrisoned workers may also repair.",
+          "A Base on a mineral node gives up to 3 minerals for 3 assigned workers. A Refinery on a gas node gives up to 3 gas. Garrisoned workers may also repair.",
       },
       {
         id: "advance",
@@ -141,8 +141,8 @@ export function TurnFlow() {
   const completed = ALL_STEPS.filter((id) => done[id]).length;
   const progress = ALL_STEPS.length === 0 ? 0 : (completed / ALL_STEPS.length) * 100;
 
-  const minerals = baseWorkers;
-  const gas = refineryWorkers;
+  const minerals = Math.min(baseWorkers, 3);
+  const gas = Math.min(refineryWorkers, 3);
 
   const toggle = (id: string) =>
     setDone((current) => ({ ...current, [id]: !current[id] }));
@@ -244,8 +244,9 @@ export function TurnFlow() {
               </div>
             </div>
             <p className="muted small">
-              A worker produces whatever its structure does: 1 mineral in a Base, 1 gas
-              in a Refinery. Unstaffed structures produce nothing.
+              Each Base on a mineral node produces 1 mineral per assigned Worker,
+              up to 3. Each Refinery on a gas node does the same for gas. Extra
+              Workers and off-node structures produce nothing.
             </p>
           </section>
 

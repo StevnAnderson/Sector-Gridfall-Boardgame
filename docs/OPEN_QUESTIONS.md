@@ -7,12 +7,13 @@ maps to a small, tested piece of `src/game/battle.ts`, `src/game/play.ts` or
 
 ## Settled
 
-**Income** — a worker produces whatever its structure does. One mineral per worker
-in a Base, one gas per worker in a Refinery. Unstaffed structures produce nothing,
-and only the worker owner's structures count. A hex holding both a Base and a
-Refinery uses the structure the Worker chose when it moved in; selecting the Worker
-and clicking its own hex re-picks the structure for later rounds. The Turn Flow
-income panel reflects exactly this.
+**Income** — a Base on a mineral node turns up to three assigned Workers into
+minerals at 1 each; a Refinery on a gas node does the same for gas. Extra Workers
+add nothing, structures off their matching node produce nothing, and only the
+worker owner's structures count. A hex holding both a Base and a Refinery assigns
+each Worker to the structure chosen when it moved in; selecting the Worker and
+clicking its own hex re-picks the structure for later rounds. The Turn Flow income
+panel caps each structure at three.
 
 **Supply** — the printed card counts are a hard per-player limit:
 
@@ -80,13 +81,15 @@ untargetable cards.
 **Range bands are combat math, not board reach.** Damage goes to an adjacent army
 regardless of band; long range does not shoot two hexes away.
 
-**Play mode is a starter map, not the full game.** The Play tab uses a fixed 3×5
-odd-r hex grid with Player A on the top edge and Player B on the bottom edge. The
-old mineral and gas nodes remain as scenery on the side edges, but income now comes
-from Base and Refinery structures. Any number of pieces from one side may stack on
-a hex. An occupied hex shows only a dot in its owner's colour; clicking one of your
-own hexes lists every piece in the left-hand hex panel, while an enemy hex reports
-only "Occupied by enemy" during planning. Conflict reveals the defending garrison.
+**Play mode is a starter map, not the full game.** The Play tab uses a fixed
+nineteen-hex odd-r grid shaped as a large hex three hexes along each side, with
+Player A on the top edge and Player B on the bottom edge. The middle hex of each
+side carries both a mineral node and a gas node; Bases and Refineries only produce
+while standing on their matching node. Any number of pieces from one side may
+stack on a hex. An occupied hex shows only a dot in its owner's colour; clicking
+one of your own hexes lists every piece in the left-hand hex panel, while an enemy
+hex reports only "Occupied by enemy" during planning. Conflict reveals the
+defending garrison.
 
 Rounds are simultaneous: from one hex, select any number of mobile pieces (Bases
 never move) and queue them to the same adjacent destination. Allied hexes and
@@ -99,20 +102,23 @@ in the battle phase. The host resolves each conflict with the battle engine (no
 retreats, automatic targeting), writes surviving HP back to the map, and the
 attacking survivors take the hex only when every defending unit is destroyed; a
 surviving defender structure keeps the hex. A head-on clash over an empty hex
-arbitrarily treats Player B as the defender. After the battle phase, each Worker
-standing on its own Base collects one mineral and each Worker on its own Refinery
-collects one gas; a dual hex uses the structure chosen when the Worker moved in.
-The round then advances. Online conflict resolution is host-authoritative; practice
-resolves an attack immediately on click instead of planning it simultaneously.
+arbitrarily treats Player B as the defender. After the battle phase, each Base on
+a mineral node turns up to three assigned Workers into minerals at 1 each, and
+each Refinery on a gas node does the same for gas. Extra Workers add nothing and
+off-node structures produce nothing; a dual hex assigns each Worker to the
+structure chosen when it moved in. The round then advances. Online conflict
+resolution is host-authoritative; practice resolves an attack immediately on
+click instead of planning it simultaneously.
 
 Construction is deliberately compressed into the same round. A selected Worker
-builds any structure on its own hex, and a selected Base trains a Worker; either
-way the piece spends its action and cannot move that round. Refinery and Barracks
-require any owned Base, and Factory requires any owned Barracks, so unlocks are
-per player rather than per hex. Costs are the codex costs — Base 8◆, Refinery 3◆,
-Barracks 5◆, Factory 6◆2▲, Worker 2◆ — and supply caps are the printed per-player
-counts. Each side starts with 4◆ and 0▲ so the first construction phase can do
-something. Build orders and Base/Refinery harvest choices travel in the online
+builds any structure on its own hex, a selected Base trains a Worker, and a
+selected Barracks trains a Soldier; either way the piece spends its action and
+cannot move that round. Refinery and Barracks require any owned Base, and Factory
+requires any owned Barracks, so unlocks are per player rather than per hex. Costs
+are the codex costs — Base 8◆, Refinery 3◆, Barracks 5◆, Factory 6◆2▲, Worker
+2◆, Soldier 3◆ — and supply caps are the printed per-player counts. Each side
+starts with 4◆ and 0▲ so the first construction phase can do something. Build
+orders and Base/Refinery harvest choices travel in the online
 Submit payload and are validated by the host; invalid or unaffordable orders are
 ignored like forged moves. The simplification is that builds complete immediately
 at resolution rather than advancing over a separate construction timer.
@@ -157,8 +163,8 @@ Ordered by how much each adds to a playtest:
    across adjacent armies, outnumber across whole teams.
 3. **Map layer** — grow the Play map into the real thing: variable boards, armies
    as stacks, maneuver tokens, full construction timers and the full battle
-   hand-off. The starter 3×5 map, grouped moves, conflicts, construction and the
-   battle phase are the first slice.
+   hand-off. The starter large-hex map, grouped moves, conflicts, construction and
+   the battle phase are the first slice.
 4. **Async play** — server-backed, resumable turns so a game can survive both
    players closing their tabs. Live play is already peer-to-peer; persistence and
    matchmaking without a shared code would need a backend.

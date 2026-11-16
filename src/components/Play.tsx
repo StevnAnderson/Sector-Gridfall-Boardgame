@@ -923,8 +923,9 @@ function OnlineStarter({
               <li>
                 Select a single Worker to open the build window for its hex:
                 Refinery, Barracks and Factory unlock as you own their
-                prerequisites. Select a Base to train a Worker. Building spends
-                that piece's action for the round.
+                prerequisites. Select a Base to train a Worker, or a Barracks
+                to train a Soldier. Building spends that piece's action for the
+                round.
               </li>
               <li>
                 Any number of allied pieces can share a hex. Moving into an allied
@@ -941,9 +942,11 @@ function OnlineStarter({
                 so inspect your stacks to see what is inside.
               </li>
               <li>
-                Workers gather from your Base (◆ +1 mineral) or Refinery (▲ +1
-                gas) on their hex. If both stand there, choose when you move in;
-                to change the choice click the Worker, then click its own hex.
+                Workers gather from your Base (◆ minerals) or Refinery (▲ gas)
+                on their hex. The structure must stand on a matching node and
+                turns up to three assigned Workers into one resource each. If
+                both stand there, choose when you move in; to change the choice
+                click the Worker, then click its own hex.
               </li>
               <li>
                 Submit your orders. When both players have submitted, every army
@@ -1040,7 +1043,9 @@ function StarterBoard({
           }).length;
           const classes = [
             "hex-tile",
-            tile.resource ? `has-resource resource-${tile.resource}` : "",
+            tile.resources.length > 0
+              ? `has-resource ${tile.resources.map((resource) => `resource-${resource}`).join(" ")}`
+              : "",
             movable ? "is-move" : "",
             attack ? "is-attack" : "",
             isSelected ? "is-selected" : "",
@@ -1066,16 +1071,24 @@ function StarterBoard({
                 top: tile.row * ROW_STEP,
               }}
               onClick={() => onTileClick(tile)}
-              aria-label={`${tileLabel(tile.col, tile.row)}${tile.resource ? `, ${tile.resource}` : ""}${
-                owner ? `, occupied by ${PLAYER_LABEL[owner]}` : ""
-              }${draftMoves.length > 0 ? ", queued move here" : ""}${
-                buildHere > 0 ? ", construction queued here" : ""
-              }${conflictTarget ? ", conflict" : ""}`}
+              aria-label={`${tileLabel(tile.col, tile.row)}${
+                tile.resources.length > 0
+                  ? `, ${tile.resources.join(" and ")} node`
+                  : ""
+              }${owner ? `, occupied by ${PLAYER_LABEL[owner]}` : ""}${
+                draftMoves.length > 0 ? ", queued move here" : ""
+              }${buildHere > 0 ? ", construction queued here" : ""}${
+                conflictTarget ? ", conflict" : ""
+              }`}
             >
               <span className="hex-face">
-                {tile.resource && (
-                  <span className={`hex-resource ${tile.resource}`} aria-hidden="true">
-                    {RESOURCE_GLYPH[tile.resource]}
+                {tile.resources.length > 0 && (
+                  <span className="hex-resources" aria-hidden="true">
+                    {tile.resources.map((resource) => (
+                      <span key={resource} className={`hex-resource ${resource}`}>
+                        {RESOURCE_GLYPH[resource]}
+                      </span>
+                    ))}
                   </span>
                 )}
                 {owner && (
@@ -1294,7 +1307,7 @@ function BuildWindow({
   queued: BuildOrder | undefined;
   onBuild: (typeId: PlayUnitType) => void;
 }) {
-  const trains = builder.typeId === "base";
+  const trains = builder.typeId === "base" || builder.typeId === "barracks";
   return (
     <div className="play-build">
       <div className="play-build-head">
@@ -1304,9 +1317,11 @@ function BuildWindow({
         </span>
       </div>
       <p className="muted small">
-        {trains
+        {builder.typeId === "base"
           ? "The Base spends its action to train a Worker on this hex."
-          : "The Worker spends its action to construct a structure on this hex."}
+          : builder.typeId === "barracks"
+            ? "The Barracks spends its action to train a Soldier on this hex."
+            : "The Worker spends its action to construct a structure on this hex."}
       </p>
       <ul className="play-build-list">
         {options.map((option) => {
@@ -1380,7 +1395,8 @@ function GatherPrompt({
       </div>
       <p className="muted small">
         This hex holds both a Base and a Refinery. Pick the structure this
-        Worker gathers from at the end of the round.
+        Worker is assigned to for the end of the round. Each structure turns up
+        to three assigned Workers into resources.
       </p>
       <div className="play-gather-buttons">
         {options.map((option) => (
@@ -1390,7 +1406,9 @@ function GatherPrompt({
             type="button"
             onClick={() => onChoose(option)}
           >
-            {option === "base" ? "Base · +1 ◆ mineral" : "Refinery · +1 ▲ gas"}
+            {option === "base"
+              ? "Base · up to 3 ◆ minerals"
+              : "Refinery · up to 3 ▲ gas"}
           </button>
         ))}
         <button className="btn ghost" type="button" onClick={onCancel}>
@@ -1478,7 +1496,13 @@ function HexInspector({
       ) : enemy && !revealEnemy ? (
         <p className="play-inspector-enemy">Occupied by enemy</p>
       ) : occupants.length === 0 ? (
-        <p className="muted small">Empty hex.</p>
+        <p className="muted small">
+          Empty hex
+          {tile.resources.length > 0
+            ? ` with ${tile.resources.join(" and ")} nodes`
+            : ""}
+          .
+        </p>
       ) : (
         <>
           <p className="muted small">
@@ -1507,20 +1531,21 @@ function HexInspector({
                   gatherOptions.length === 1
                     ? gatherOptions[0] ?? "base"
                     : choice ?? unit.gatherFrom ?? "base";
-                const resource = from === "base" ? "◆ mineral" : "▲ gas";
-                return ` · gathers ${resource} from ${from === "base" ? "Base" : "Refinery"}`;
+                return ` · assigned to ${from === "base" ? "Base (◆)" : "Refinery (▲)"}`;
               })();
               const note = build
                 ? `Building ${UNIT_LABEL[build.typeId]}`
                 : unit.typeId === "base"
                   ? "Structure · cannot move · trains Workers"
-                  : isStructure
-                    ? "Structure · cannot move"
-                    : unit.moved
-                      ? "Already acted"
-                      : order
-                        ? `Queued → ${tileLabel(order.col, order.row)}`
-                        : "Ready to move";
+                  : unit.typeId === "barracks"
+                    ? "Structure · cannot move · trains Soldiers"
+                    : isStructure
+                      ? "Structure · cannot move"
+                      : unit.moved
+                        ? "Already acted"
+                        : order
+                          ? `Queued → ${tileLabel(order.col, order.row)}`
+                          : "Ready to move";
               return (
                 <li key={unit.id}>
                   <button
@@ -1565,7 +1590,7 @@ function HexInspector({
                 ? "Click this hex again to switch which structure this Worker gathers from."
                 : selectedIds.length > 0
                   ? `${selectedIds.length} selected. Click a highlighted neighbour to march the group together.`
-                  : "Select one or more pieces, then click a highlighted neighbouring hex. Select a single Worker or Base to build."}
+                  : "Select one or more pieces, then click a highlighted neighbouring hex. Select a Worker to build, or a Base/Barracks to train."}
             </p>
           )}
           {revealEnemy && (
@@ -1950,8 +1975,8 @@ function StarterPlay() {
               </li>
               <li>A hex shows a dot in its owner's colour instead of each piece.</li>
               <li>
-                Each unit moves once per turn. Bases hold their edge, but a
-                selected Base can train a Worker on its own hex.
+                Each unit moves once per turn. Structures hold their hex; a
+                selected Base trains Workers and a Barracks trains Soldiers.
               </li>
               <li>
                 Select a single Worker to build a structure on its hex. A Base
@@ -1959,9 +1984,10 @@ function StarterPlay() {
                 Building uses the piece's action.
               </li>
               <li>
-                End the turn to harvest: every Worker on your Base adds 1◆, and
-                every Worker on your Refinery adds 1▲, even when Workers are
-                stacked. Enemy structures produce nothing.
+                Node hexes sit at the middle of each side. A Base on a mineral
+                node turns up to 3 assigned Workers into 3◆; a Refinery on a gas
+                node does the same for gas (▲). Extra Workers add nothing, and
+                structures off a node produce nothing.
               </li>
               <li>
                 If a hex holds both your Base and Refinery, choose the structure
