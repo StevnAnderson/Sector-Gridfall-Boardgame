@@ -95,9 +95,10 @@ the other side wins, and if both sides lose their last structure in the same
 round the game is a draw. After the battles each Base on a mineral node turns up
 to five assigned Workers into minerals, and each Refinery on a gas node turns up
 to three into gas. Extra Workers beyond those caps add nothing, and a structure
-off a matching node produces nothing. When a hex holds both structures, the Worker is
-assigned to the one chosen when it moved in; select that Worker and click its own
-hex to switch the choice for later rounds. The next round then begins. Resources
+off a matching node produces nothing. When a hex holds both structures, each Worker is
+assigned to the one chosen when it moved in; select one or more Workers and click
+their own hex (or use Change harvest) to switch the choice for later rounds. The
+next round then begins. Resources
 buy builds. **Forfeit** declares the opponent the winner and returns both players
 to matching.
 
@@ -132,9 +133,10 @@ Settled with the designer:
 - **Income** — a Base on a mineral node turns up to five assigned Workers into 5
   minerals; a Refinery on a gas node turns up to three into 3 gas. Additional
   Workers add nothing, structures off a matching node produce nothing, and enemy
-  structures never produce for you. When a hex holds both your Base and Refinery, the Worker
-  joins the structure chosen when it moved in; selecting the Worker and clicking
-  its own hex changes that assignment for later rounds.
+  structures never produce for you. When a hex holds both your Base and Refinery, each Worker
+  joins the structure chosen when it moved in; selecting one or more Workers and
+  clicking their own hex (or using Change harvest) changes that assignment for
+  later rounds.
 - **Elimination** — a player with no structures left is out and the opponent wins.
   Both sides losing their last structure together is a draw.
 - **Supply** — the printed card counts are hard per-player limits (12 workers, 12

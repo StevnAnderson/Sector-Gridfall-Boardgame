@@ -244,6 +244,25 @@ interface PendingGather {
   move: boolean;
 }
 
+/** Selected Workers that could switch between a Base and a Refinery here. */
+function harvestWorkerIds(
+  state: PlayState,
+  units: PlayUnit[],
+  player: Player,
+  tile: MapTile,
+): string[] {
+  if (gatherOptionsAt(state, player, tile.col, tile.row).length < 2) return [];
+  return units
+    .filter(
+      (unit) =>
+        unit.owner === player &&
+        unit.typeId === "worker" &&
+        unit.col === tile.col &&
+        unit.row === tile.row,
+    )
+    .map((unit) => unit.id);
+}
+
 /** A move waiting for the player to choose how many pieces leave the hex. */
 interface PendingMove {
   tileId: string;
@@ -773,15 +792,27 @@ function OnlineStarter({
       return;
     }
 
-    const unitId = pending.unitIds[0];
-    if (unitId) {
+    if (pending.unitIds.length > 0) {
+      const ids = new Set(pending.unitIds);
       setHarvests((current) => [
-        ...current.filter((choice) => choice.unitId !== unitId),
-        { unitId, gatherFrom },
+        ...current.filter((choice) => !ids.has(choice.unitId)),
+        ...pending.unitIds.map((unitId) => ({ unitId, gatherFrom })),
       ]);
     }
     setPendingGather(null);
     setInspectedId(pending.tileId);
+  };
+
+  const openHarvestChange = (unitIds: string[], tile: MapTile) => {
+    if (submitted) return;
+    setPendingGather({
+      unitIds,
+      col: tile.col,
+      row: tile.row,
+      tileId: tile.id,
+      move: false,
+    });
+    setInspectedId(tile.id);
   };
 
   const toggleSelection = (unitIds: string[]) => {
@@ -795,25 +826,12 @@ function OnlineStarter({
     }
 
     const group = selectedUnits;
-    const onlyUnit = group.length === 1 ? group[0] : undefined;
 
-    // Selecting a Worker's own dual hex re-picks its structure instead of
-    // trying to move it onto itself.
-    if (
-      onlyUnit &&
-      onlyUnit.typeId === "worker" &&
-      onlyUnit.col === tile.col &&
-      onlyUnit.row === tile.row &&
-      gatherOptionsAt(state, me, tile.col, tile.row).length > 1
-    ) {
-      setPendingGather({
-        unitIds: [onlyUnit.id],
-        col: tile.col,
-        row: tile.row,
-        tileId: tile.id,
-        move: false,
-      });
-      setInspectedId(tile.id);
+    // Clicking a Worker's own dual hex re-picks its structure for every
+    // selected Worker there, instead of trying to move them onto themselves.
+    const workerIds = harvestWorkerIds(state, group, me, tile);
+    if (workerIds.length > 0) {
+      openHarvestChange(workerIds, tile);
       return;
     }
 
@@ -901,6 +919,7 @@ function OnlineStarter({
             harvests={harvests}
             onToggleGroup={toggleSelection}
             onBuild={addBuild}
+            onChangeHarvest={openHarvestChange}
           />
         </aside>
 
@@ -1123,7 +1142,8 @@ function OnlineStarter({
                 on their hex. The structure must stand on a matching node: a Base
                 turns up to five assigned Workers into minerals, a Refinery up
                 to three into gas. If both stand there, choose when you move in;
-                to change the choice click the Worker, then click its own hex.
+                to change the choice select the Workers and click their own hex,
+                or use Change harvest in the hex panel.
               </li>
               <li>
                 Submit your orders. When both players have submitted, every army
@@ -1562,10 +1582,16 @@ function GatherPrompt({
   onCancel: () => void;
 }) {
   const options = gatherOptionsAt(state, player, pending.col, pending.row);
-  const unit = unitById(state, pending.unitIds[0] ?? "");
-  const current: GatherFrom = pending.move
-    ? "base"
-    : unit?.gatherFrom ?? "base";
+  const assigned = pending.unitIds
+    .map((id) => unitById(state, id))
+    .filter((unit): unit is PlayUnit => unit !== undefined)
+    .map((unit) => unit.gatherFrom ?? "base");
+  const current: GatherFrom | null =
+    !pending.move &&
+    assigned.length > 0 &&
+    assigned.every((value) => value === assigned[0])
+      ? assigned[0]!
+      : null;
 
   return (
     <section className="play-gather" aria-label="Choose a structure to gather from">
@@ -1576,9 +1602,12 @@ function GatherPrompt({
         </span>
       </div>
       <p className="muted small">
-        This hex holds both a Base and a Refinery. Pick the structure this
-        Worker is assigned to for the end of the round. A Base turns up to five
-        assigned Workers into minerals; a Refinery turns up to three into gas.
+        This hex holds both a Base and a Refinery. Pick the structure{" "}
+        {pending.unitIds.length > 1
+          ? `all ${pending.unitIds.length} selected Workers should gather from`
+          : "this Worker should gather from"}{" "}
+        for the end of the round. A Base turns up to five assigned Workers into
+        minerals; a Refinery turns up to three into gas.
       </p>
       <div className="play-gather-buttons">
         {options.map((option) => (
@@ -1702,6 +1731,7 @@ function HexInspector({
   builds = [],
   harvests = [],
   onBuild,
+  onChangeHarvest,
   disabled = false,
 }: {
   state: PlayState;
@@ -1713,6 +1743,7 @@ function HexInspector({
   builds?: BuildOrder[];
   harvests?: HarvestChoice[];
   onBuild?: (builderId: string, typeId: PlayUnitType) => void;
+  onChangeHarvest?: (unitIds: string[], tile: MapTile) => void;
   disabled?: boolean;
 }) {
   const occupants = tile ? unitsAt(state, tile.col, tile.row) : [];
@@ -1747,16 +1778,17 @@ function HexInspector({
   const queuedBuild = builder
     ? builds.find((order) => order.builderId === builder.id)
     : undefined;
-  const selectedWorker =
-    selectedPieces.length === 1 && selectedPieces[0]?.typeId === "worker"
-      ? selectedPieces[0]
-      : undefined;
-  const selectedDual =
-    selectedWorker !== undefined &&
+  const harvestWorkers =
     tile !== undefined &&
-    selectedWorker.col === tile.col &&
-    selectedWorker.row === tile.row &&
-    gatherOptionsAt(state, viewer, tile.col, tile.row).length > 1;
+    gatherOptionsAt(state, viewer, tile.col, tile.row).length > 1
+      ? selectedPieces.filter(
+          (unit) =>
+            unit.owner === viewer &&
+            unit.typeId === "worker" &&
+            unit.col === tile.col &&
+            unit.row === tile.row,
+        )
+      : [];
 
   const stacks = buildStacks(state, occupants, draft, builds, harvests, true);
 
@@ -1887,6 +1919,22 @@ function HexInspector({
               );
             })}
           </ul>
+          {harvestWorkers.length > 0 && !disabled && onChangeHarvest && tile && (
+            <button
+              className="btn ghost"
+              type="button"
+              onClick={() =>
+                onChangeHarvest(
+                  harvestWorkers.map((unit) => unit.id),
+                  tile,
+                )
+              }
+            >
+              {harvestWorkers.length > 1
+                ? `Change harvest for ${harvestWorkers.length} Workers`
+                : "Change harvest"}
+            </button>
+          )}
           {builder && options.length > 0 && (
             <BuildWindow
               builder={builder}
@@ -1897,8 +1945,10 @@ function HexInspector({
           )}
           {owner === viewer && hasSelectable && (
             <p className="muted small">
-              {selectedDual
-                ? "Click this hex again to switch which structure this Worker gathers from."
+              {harvestWorkers.length > 0
+                ? harvestWorkers.length > 1
+                  ? "Use Change harvest (or click this hex again) to switch these Workers between Base and Refinery."
+                  : "Use Change harvest (or click this hex again) to switch this Worker between Base and Refinery."
                 : selectedIds.length > 0
                   ? `${selectedIds.length} selected. Click a highlighted neighbour to march the group together.`
                   : "Select one or more pieces, then click a highlighted neighbouring hex. Select a Worker or a stack to build, or a Base/Barracks to train."}
@@ -2067,21 +2117,29 @@ function StarterPlay() {
         setInspectedId(pending.tileId);
       }
     } else {
-      const unitId = pending.unitIds[0];
-      if (unitId) {
-        const next = setGatherPreference(
-          state,
-          state.active,
-          unitId,
-          gatherFrom,
-        );
-        if (next !== state) {
-          setState(next);
-          setInspectedId(pending.tileId);
-        }
+      let next = state;
+      for (const unitId of pending.unitIds) {
+        const updated = setGatherPreference(next, state.active, unitId, gatherFrom);
+        if (updated !== next) next = updated;
+      }
+      if (next !== state) {
+        setState(next);
+        setInspectedId(pending.tileId);
       }
     }
     setPendingGather(null);
+  };
+
+  const openHarvestChange = (unitIds: string[], tile: MapTile) => {
+    if (state.winner) return;
+    setPendingGather({
+      unitIds,
+      col: tile.col,
+      row: tile.row,
+      tileId: tile.id,
+      move: false,
+    });
+    setInspectedId(tile.id);
   };
 
   /** Move the group now, asking for a gather assignment when the hex offers both. */
@@ -2137,24 +2195,12 @@ function StarterPlay() {
     }
 
     const group = selectedUnits;
-    const onlyUnit = group.length === 1 ? group[0] : undefined;
 
-    // Clicking a selected Worker's own dual hex re-picks its structure.
-    if (
-      onlyUnit &&
-      onlyUnit.typeId === "worker" &&
-      onlyUnit.col === tile.col &&
-      onlyUnit.row === tile.row &&
-      gatherOptionsAt(state, state.active, tile.col, tile.row).length > 1
-    ) {
-      setPendingGather({
-        unitIds: [onlyUnit.id],
-        col: tile.col,
-        row: tile.row,
-        tileId: tile.id,
-        move: false,
-      });
-      setInspectedId(tile.id);
+    // Clicking a Worker's own dual hex re-picks its structure for every
+    // selected Worker there, instead of trying to move them onto themselves.
+    const workerIds = harvestWorkerIds(state, group, state.active, tile);
+    if (workerIds.length > 0) {
+      openHarvestChange(workerIds, tile);
       return;
     }
 
@@ -2250,6 +2296,7 @@ function StarterPlay() {
             disabled={gameOver || state.phase === "battle"}
             onToggleGroup={toggleSelection}
             onBuild={onBuild}
+            onChangeHarvest={openHarvestChange}
           />
         </aside>
 
@@ -2386,8 +2433,9 @@ function StarterPlay() {
               </li>
               <li>
                 If a hex holds both your Base and Refinery, choose the structure
-                when the Worker moves in. To change the choice, select the
-                Worker and click its own hex — this costs no action.
+                when the Workers move in. To change the choice for one or more
+                Workers, select them and click their own hex, or use Change
+                harvest in the hex panel — this costs no action.
               </li>
               <li>
                 Harvested resources pay for construction and training. Each side
