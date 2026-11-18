@@ -26,7 +26,12 @@ import type { Card, Cost } from "./types";
 export type Player = "a" | "b";
 export type ResourceType = "minerals" | "gas";
 export type PlayStructureType = "base" | "refinery" | "barracks" | "factory";
-export type PlayUnitType = PlayStructureType | "worker" | "soldier";
+export type PlayUnitType =
+  | PlayStructureType
+  | "worker"
+  | "soldier"
+  | "walker"
+  | "artillery";
 
 /** The two structures a Worker can harvest from. */
 export type GatherFrom = "base" | "refinery";
@@ -231,6 +236,8 @@ export const UNIT_LABEL: Record<PlayUnitType, string> = {
   factory: "Factory",
   worker: "Worker",
   soldier: "Soldier",
+  walker: "Walker",
+  artillery: "Artillery",
 };
 
 export function hexId(col: number, row: number): string {
@@ -462,22 +469,25 @@ export function describeCost(cost: Cost): string {
   return parts.length > 0 ? parts.join(" ") : "free";
 }
 
-/** Units a structure can train on its own hex. */
-const TRAINED_BY: Partial<Record<PlayUnitType, PlayUnitType>> = {
-  base: "worker",
-  barracks: "soldier",
+/** Units each structure can train on its own hex. */
+const TRAINED_BY: Partial<Record<PlayUnitType, PlayUnitType[]>> = {
+  base: ["worker"],
+  barracks: ["soldier", "walker"],
+  factory: ["artillery"],
 };
 
 const TRAIN_REASON: Partial<Record<PlayUnitType, string>> = {
   base: "Bases train Workers",
-  barracks: "Barracks train Soldiers",
+  barracks: "Barracks train Soldiers and Walkers",
+  factory: "Factories train Artillery",
 };
 
 /**
  * Why a particular piece can or cannot build a particular card. Workers build
- * structures; Bases train Workers and Barracks train Soldiers. Unlocks are per
- * player: owning a Base anywhere lets any Worker build a Refinery or Barracks,
- * and owning a Barracks unlocks the Factory.
+ * structures; Bases train Workers, Barracks train Soldiers and Walkers, and
+ * Factories train Artillery. Unlocks are per player: owning a Base anywhere
+ * lets any Worker build a Refinery or Barracks, and owning a Barracks unlocks
+ * the Factory.
  */
 export function canBuild(
   state: PlayState,
@@ -506,7 +516,7 @@ export function canBuild(
       return { ok: false, reason: "Workers build structures" };
     }
   } else if (trained !== undefined) {
-    if (def.id !== trained) {
+    if (!trained.includes(def.id as PlayUnitType)) {
       return { ok: false, reason: TRAIN_REASON[builder.typeId] ?? "Cannot train" };
     }
   } else {
@@ -554,7 +564,9 @@ export function buildOptions(
     builder.typeId === "worker"
       ? CARD_DEFINITIONS.filter((def) => def.kind === "structure")
       : trained !== undefined
-        ? CARD_DEFINITIONS.filter((def) => def.id === trained)
+        ? CARD_DEFINITIONS.filter((def) =>
+            trained.includes(def.id as PlayUnitType),
+          )
         : [];
   if (defs.length === 0) return [];
 

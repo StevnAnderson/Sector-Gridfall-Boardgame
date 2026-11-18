@@ -80,8 +80,9 @@ and the round pauses for the battle phase. Structures never move.
 
 Select a Worker or a stack of Workers to open a build window for that hex:
 Refinery, Barracks and Factory become buildable as their prerequisites are owned.
-A Base trains Workers and a Barracks trains Soldiers. The selected piece spends
-its action for the round, so it cannot also move or gather income. Build orders
+A Base trains Workers, a Barracks trains Soldiers and Walkers, and a Factory
+trains Artillery. The selected piece spends its action for the round, so it
+cannot also move or gather income. Build orders
 are queued alongside moves and shown on the board and in the Orders panel until
 you submit.
 
@@ -143,11 +144,12 @@ Settled with the designer:
   soldiers, 12 walkers, 9 artillery, 6 Bases, 8 Barracks, 6 Factories, 5 Refineries).
 - **Builds** — every card takes one turn.
 - **Building on the starter map** — Workers construct structures, Bases train
-  Workers and Barracks train Soldiers; the builder spends its action for the
-  round. A Base unlocks Refinery and Barracks, and a Barracks unlocks the Factory.
-  Unlocks are per player, not per hex. Each side opens with 4 minerals and 0 gas
-  so construction can start immediately, and builds cost the codex prices: Base
-  8◆, Refinery 3◆, Barracks 5◆, Factory 6◆2▲, Worker 2◆, Soldier 3◆.
+  Workers, Barracks train Soldiers and Walkers, and Factories train Artillery;
+  the builder spends its action for the round. A Base unlocks Refinery and
+  Barracks, and a Barracks unlocks the Factory. Unlocks are per player, not per
+  hex. Each side opens with 4 minerals and 0 gas so construction can start
+  immediately, and builds cost the codex prices: Base 8◆, Refinery 3◆, Barracks
+  5◆, Factory 6◆2▲, Worker 2◆, Soldier 3◆, Walker 5◆1▲, Artillery 8◆1▲.
 - **Retreats** — retreating units deal no damage, are non-threatening, can be
   skipped as targets, and leave after any band that deals damage. You can change
   the retreat list at the start of every round; units that leave stay gone.

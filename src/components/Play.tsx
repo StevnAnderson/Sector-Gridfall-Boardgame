@@ -1136,15 +1136,15 @@ function OnlineStarter({
                 them all.
               </li>
               <li>
-                Choose one or more Workers or Soldiers in the panel, then click a
+                Choose one or more mobile units in the panel, then click a
                 highlighted adjacent hex. The whole group marches together.
               </li>
               <li>
                 Select a single Worker to open the build window for its hex:
                 Refinery, Barracks and Factory unlock as you own their
-                prerequisites. Select a Base to train a Worker, or a Barracks
-                to train a Soldier. Building spends that piece's action for the
-                round.
+                prerequisites. Select a Base to train a Worker, a Barracks to
+                train a Soldier or Walker, or a Factory to train Artillery.
+                Building spends that piece's action for the round.
               </li>
               <li>
                 Any number of allied pieces can share a hex. Moving into an allied
@@ -1533,7 +1533,10 @@ function BuildWindow({
   queued: BuildOrder | undefined;
   onBuild: (typeId: PlayUnitType) => void;
 }) {
-  const trains = builder.typeId === "base" || builder.typeId === "barracks";
+  const trains =
+    builder.typeId === "base" ||
+    builder.typeId === "barracks" ||
+    builder.typeId === "factory";
   return (
     <div className="play-build">
       <div className="play-build-head">
@@ -1546,8 +1549,10 @@ function BuildWindow({
         {builder.typeId === "base"
           ? "The Base spends its action to train a Worker on this hex."
           : builder.typeId === "barracks"
-            ? "The Barracks spends its action to train a Soldier on this hex."
-            : "The Worker spends its action to construct a structure on this hex."}
+            ? "The Barracks spends its action to train a Soldier or Walker on this hex."
+            : builder.typeId === "factory"
+              ? "The Factory spends its action to train Artillery on this hex."
+              : "The Worker spends its action to construct a structure on this hex."}
       </p>
       <ul className="play-build-list">
         {options.map((option) => {
@@ -1978,7 +1983,10 @@ function HexInspector({
                     return "Structure · cannot move · trains Workers";
                   }
                   if (stack.typeId === "barracks") {
-                    return "Structure · cannot move · trains Soldiers";
+                    return "Structure · cannot move · trains Soldiers and Walkers";
+                  }
+                  if (stack.typeId === "factory") {
+                    return "Structure · cannot move · trains Artillery";
                   }
                   return "Structure · cannot move";
                 }
@@ -2077,7 +2085,7 @@ function HexInspector({
                   : "Use Change harvest (or click this hex again) to switch this Worker between Base and Refinery."
                 : selectedIds.length > 0
                   ? `${selectedIds.length} selected. Click a highlighted neighbour to march the group together.`
-                  : "Select one or more pieces, then click a highlighted neighbouring hex. Select a Worker or a stack to build, or a Base/Barracks to train."}
+                  : "Select one or more pieces, then click a highlighted neighbouring hex. Select a Worker to build, or a Base, Barracks or Factory to train."}
             </p>
           )}
           {revealEnemy && (
@@ -2553,7 +2561,7 @@ function StarterPlay() {
             <ul className="play-help">
               <li>
                 Click one of your hexes to inspect it, then select one or more
-                Workers or Soldiers from the hex panel. Identical pieces share a
+                mobile units from the hex panel. Identical pieces share a
                 stacked row such as "Soldier x3" or "Worker (Base) x3".
               </li>
               <li>
@@ -2574,9 +2582,10 @@ function StarterPlay() {
               <li>A hex shows a dot in its owner's colour instead of each piece.</li>
               <li>
                 Each unit moves once per turn. Structures hold their hex; a
-                selected Base trains Workers and a Barracks trains Soldiers. Both
-                sides start with three Workers on their Base and no Soldiers, so
-                build a Barracks before fielding an army.
+                selected Base trains Workers, a Barracks trains Soldiers and
+                Walkers, and a Factory trains Artillery. Both sides start with
+                three Workers on their Base and no Soldiers, so build a
+                Barracks before fielding an army.
               </li>
               <li>
                 Select a Worker or a stack of Workers to build a structure on the

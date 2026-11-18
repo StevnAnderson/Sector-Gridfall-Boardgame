@@ -46,10 +46,36 @@ export default function App() {
       </header>
 
       <main className="content">
-        {tab === "codex" && <Codex />}
-        {tab === "battle" && <BattleLab />}
-        {tab === "turn" && <TurnFlow />}
-        {tab === "play" && <Play />}
+        {/* Every tab stays mounted so a Play match keeps running while the
+            Codex, Battle Lab or Turn Flow is open for reference. */}
+        <div
+          role="tabpanel"
+          aria-hidden={tab !== "codex"}
+          style={{ display: tab === "codex" ? undefined : "none" }}
+        >
+          <Codex />
+        </div>
+        <div
+          role="tabpanel"
+          aria-hidden={tab !== "battle"}
+          style={{ display: tab === "battle" ? undefined : "none" }}
+        >
+          <BattleLab />
+        </div>
+        <div
+          role="tabpanel"
+          aria-hidden={tab !== "turn"}
+          style={{ display: tab === "turn" ? undefined : "none" }}
+        >
+          <TurnFlow />
+        </div>
+        <div
+          role="tabpanel"
+          aria-hidden={tab !== "play"}
+          style={{ display: tab === "play" ? undefined : "none" }}
+        >
+          <Play />
+        </div>
       </main>
 
       <footer className="footer">

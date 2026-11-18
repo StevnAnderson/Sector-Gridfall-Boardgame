@@ -630,6 +630,62 @@ describe("construction and training", () => {
     expect(unitById(next, barracks.id)?.moved).toBe(true);
   });
 
+  it("lets a Barracks train a Walker on its own hex", () => {
+    const state = createSkirmishState();
+    const barracks: PlayUnit = {
+      id: "a-barracks-walker",
+      owner: "a",
+      typeId: "barracks",
+      col: 1,
+      row: 0,
+      moved: false,
+    };
+    const withBarracks: PlayState = {
+      ...state,
+      units: [...state.units, barracks],
+      stock: { ...state.stock, a: { minerals: 10, gas: 3 } },
+    };
+
+    const next = buildUnit(withBarracks, "a", barracks.id, "walker");
+
+    expect(next.stock.a).toEqual({ minerals: 5, gas: 2 });
+    expect(unitById(next, "a-walker-1")).toMatchObject({
+      owner: "a",
+      typeId: "walker",
+      col: 1,
+      row: 0,
+    });
+    expect(unitById(next, barracks.id)?.moved).toBe(true);
+  });
+
+  it("lets a Factory train Artillery on its own hex", () => {
+    const state = createSkirmishState();
+    const factory: PlayUnit = {
+      id: "a-factory-artillery",
+      owner: "a",
+      typeId: "factory",
+      col: 2,
+      row: 0,
+      moved: false,
+    };
+    const withFactory: PlayState = {
+      ...state,
+      units: [...state.units, factory],
+      stock: { ...state.stock, a: { minerals: 20, gas: 5 } },
+    };
+
+    const next = buildUnit(withFactory, "a", factory.id, "artillery");
+
+    expect(next.stock.a).toEqual({ minerals: 12, gas: 4 });
+    expect(unitById(next, "a-artillery-1")).toMatchObject({
+      owner: "a",
+      typeId: "artillery",
+      col: 2,
+      row: 0,
+    });
+    expect(unitById(next, factory.id)?.moved).toBe(true);
+  });
+
   it("requires the unlocking structure before building advanced cards", () => {
     const state = createSkirmishState();
     expect(canBuild(state, "a", "a-worker", "factory")).toMatchObject({
@@ -708,7 +764,7 @@ describe("construction and training", () => {
     expect(unitById(next, "a-worker")?.building).toBe(false);
   });
 
-  it("lists build window options for Workers and Bases only", () => {
+  it("lists each builder's training options", () => {
     const state = createSkirmishState();
     const workerOptions = buildOptions(state, "a", "a-worker");
 
@@ -744,10 +800,34 @@ describe("construction and training", () => {
       buildOptions(withBarracks, "a", "a-barracks-1").map(
         (option) => option.typeId,
       ),
-    ).toEqual(["soldier"]);
+    ).toEqual(["soldier", "walker"]);
     expect(canBuild(withBarracks, "a", "a-barracks-1", "worker")).toMatchObject({
       ok: false,
-      reason: "Barracks train Soldiers",
+      reason: "Barracks train Soldiers and Walkers",
+    });
+
+    const withFactory: PlayState = {
+      ...withBarracks,
+      units: [
+        ...withBarracks.units,
+        {
+          id: "a-factory-1",
+          owner: "a",
+          typeId: "factory",
+          col: 2,
+          row: 0,
+          moved: false,
+        },
+      ],
+    };
+    expect(
+      buildOptions(withFactory, "a", "a-factory-1").map(
+        (option) => option.typeId,
+      ),
+    ).toEqual(["artillery"]);
+    expect(canBuild(withFactory, "a", "a-factory-1", "soldier")).toMatchObject({
+      ok: false,
+      reason: "Factories train Artillery",
     });
     expect(canBuild(state, "a", "a-base", "soldier")).toMatchObject({
       ok: false,

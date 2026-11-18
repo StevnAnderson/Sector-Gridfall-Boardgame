@@ -112,7 +112,7 @@ export const CARD_DEFINITIONS: CardDefinition[] = [
     supply: 8,
     produces: ["soldiers", "walkers"],
     unlocks: ["factory"],
-    blurb: "Trains Soldiers on its own hex. Unlocks the Factory.",
+    blurb: "Trains Soldiers and Walkers on its own hex. Unlocks the Factory.",
     glyph: "▥",
   },
   {

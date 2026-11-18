@@ -93,7 +93,8 @@ nineteen-hex odd-r grid shaped as a large hex three hexes along each side, with
 Player A on the top edge and Player B on the bottom edge. The middle hex of each
 side carries both a mineral node and a gas node; Bases and Refineries only produce
 while standing on their matching node. Each side starts with three Workers on its
-Base and no Soldiers — a Barracks has to train Soldiers. Any number of pieces
+Base and no Soldiers — a Barracks has to train Soldiers. Barracks also train
+Walkers, and a Factory trains Artillery. Any number of pieces
 from one side may stack on a hex. An occupied hex shows only a dot in its owner's colour; clicking
 one of your own hexes lists every piece in the left-hand hex panel, while an enemy
 hex reports only "Occupied by enemy" during planning. Conflict reveals the
@@ -121,15 +122,16 @@ host-authoritative; practice resolves an attack immediately on click instead of
 planning it simultaneously.
 
 Construction is deliberately compressed into the same round. A selected Worker
-builds any structure on its own hex, a selected Base trains a Worker, and a
-selected Barracks trains a Soldier; either way the piece spends its action and
-cannot move that round. A building Worker also does not gather income that round,
-and selecting a stack of Workers lets each one build in turn. Refinery and
-Barracks require any owned Base, and Factory
-requires any owned Barracks, so unlocks are per player rather than per hex. Costs
-are the codex costs — Base 8◆, Refinery 3◆, Barracks 5◆, Factory 6◆2▲, Worker
-2◆, Soldier 3◆ — and supply caps are the printed per-player counts. Each side
-starts with 4◆ and 0▲ so the first construction phase can do something. Build
+builds any structure on its own hex, a selected Base trains a Worker, a selected
+Barracks trains a Soldier or Walker, and a selected Factory trains Artillery;
+either way the piece spends its action and cannot move that round. A building
+Worker also does not gather income that round, and selecting a stack of Workers
+lets each one build in turn. Refinery and Barracks require any owned Base, and
+Factory requires any owned Barracks, so unlocks are per player rather than per
+hex. Costs are the codex costs — Base 8◆, Refinery 3◆, Barracks 5◆, Factory
+6◆2▲, Worker 2◆, Soldier 3◆, Walker 5◆1▲, Artillery 8◆1▲ — and supply caps are
+the printed per-player counts. Each side starts with 4◆ and 0▲ so the first
+construction phase can do something. Build
 orders and Base/Refinery harvest choices travel in the online
 Submit payload and are validated by the host; invalid or unaffordable orders are
 ignored like forged moves. The simplification is that builds complete immediately
