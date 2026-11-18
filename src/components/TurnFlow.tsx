@@ -1,3 +1,4 @@
+import { BASE_HARVEST_CAP, REFINERY_HARVEST_CAP } from "../game/play";
 import { useLocalStorage } from "../lib/useLocalStorage";
 import { SectionHeading, Tag } from "./ui";
 
@@ -27,7 +28,7 @@ const PHASES: Phase[] = [
         id: "income",
         title: "Collect income",
         detail:
-          "A Base on a mineral node gives up to 3 minerals for 3 assigned workers. A Refinery on a gas node gives up to 3 gas. Garrisoned workers may also repair.",
+          "A Base on a mineral node gives up to 7 minerals for 7 assigned workers. A Refinery on a gas node gives up to 3 gas for 3 workers. Garrisoned workers may also repair.",
       },
       {
         id: "advance",
@@ -141,8 +142,8 @@ export function TurnFlow() {
   const completed = ALL_STEPS.filter((id) => done[id]).length;
   const progress = ALL_STEPS.length === 0 ? 0 : (completed / ALL_STEPS.length) * 100;
 
-  const minerals = Math.min(baseWorkers, 3);
-  const gas = Math.min(refineryWorkers, 3);
+  const minerals = Math.min(baseWorkers, BASE_HARVEST_CAP);
+  const gas = Math.min(refineryWorkers, REFINERY_HARVEST_CAP);
 
   const toggle = (id: string) =>
     setDone((current) => ({ ...current, [id]: !current[id] }));
@@ -245,7 +246,7 @@ export function TurnFlow() {
             </div>
             <p className="muted small">
               Each Base on a mineral node produces 1 mineral per assigned Worker,
-              up to 3. Each Refinery on a gas node does the same for gas. Extra
+              up to 7. Each Refinery on a gas node produces up to 3 gas. Extra
               Workers and off-node structures produce nothing.
             </p>
           </section>

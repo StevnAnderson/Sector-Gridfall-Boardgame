@@ -7,13 +7,13 @@ maps to a small, tested piece of `src/game/battle.ts`, `src/game/play.ts` or
 
 ## Settled
 
-**Income** — a Base on a mineral node turns up to three assigned Workers into
-minerals at 1 each; a Refinery on a gas node does the same for gas. Extra Workers
-add nothing, structures off their matching node produce nothing, and only the
-worker owner's structures count. A hex holding both a Base and a Refinery assigns
-each Worker to the structure chosen when it moved in; selecting the Worker and
-clicking its own hex re-picks the structure for later rounds. The Turn Flow income
-panel caps each structure at three.
+**Income** — a Base on a mineral node turns up to seven assigned Workers into
+minerals at 1 each; a Refinery on a gas node turns up to three into gas. Extra
+Workers add nothing, structures off their matching node produce nothing, and only
+the worker owner's structures count. A hex holding both a Base and a Refinery
+assigns each Worker to the structure chosen when it moved in; selecting the Worker
+and clicking its own hex re-picks the structure for later rounds. The Turn Flow
+income panel caps a Base at seven and a Refinery at three.
 
 **Supply** — the printed card counts are a hard per-player limit:
 
@@ -85,8 +85,9 @@ regardless of band; long range does not shoot two hexes away.
 nineteen-hex odd-r grid shaped as a large hex three hexes along each side, with
 Player A on the top edge and Player B on the bottom edge. The middle hex of each
 side carries both a mineral node and a gas node; Bases and Refineries only produce
-while standing on their matching node. Any number of pieces from one side may
-stack on a hex. An occupied hex shows only a dot in its owner's colour; clicking
+while standing on their matching node. Each side starts with three Workers on its
+Base and no Soldiers — a Barracks has to train Soldiers. Any number of pieces
+from one side may stack on a hex. An occupied hex shows only a dot in its owner's colour; clicking
 one of your own hexes lists every piece in the left-hand hex panel, while an enemy
 hex reports only "Occupied by enemy" during planning. Conflict reveals the
 defending garrison.
@@ -103,9 +104,9 @@ retreats, automatic targeting), writes surviving HP back to the map, and the
 attacking survivors take the hex only when every defending unit is destroyed; a
 surviving defender structure keeps the hex. A head-on clash over an empty hex
 arbitrarily treats Player B as the defender. After the battle phase, each Base on
-a mineral node turns up to three assigned Workers into minerals at 1 each, and
-each Refinery on a gas node does the same for gas. Extra Workers add nothing and
-off-node structures produce nothing; a dual hex assigns each Worker to the
+a mineral node turns up to seven assigned Workers into minerals at 1 each, and
+each Refinery on a gas node turns up to three into gas. Extra Workers add nothing
+and off-node structures produce nothing; a dual hex assigns each Worker to the
 structure chosen when it moved in. The round then advances. Online conflict
 resolution is host-authoritative; practice resolves an attack immediately on
 click instead of planning it simultaneously.

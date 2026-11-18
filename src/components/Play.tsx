@@ -1106,10 +1106,10 @@ function OnlineStarter({
               </li>
               <li>
                 Workers gather from your Base (◆ minerals) or Refinery (▲ gas)
-                on their hex. The structure must stand on a matching node and
-                turns up to three assigned Workers into one resource each. If
-                both stand there, choose when you move in; to change the choice
-                click the Worker, then click its own hex.
+                on their hex. The structure must stand on a matching node: a Base
+                turns up to seven assigned Workers into minerals, a Refinery up
+                to three into gas. If both stand there, choose when you move in;
+                to change the choice click the Worker, then click its own hex.
               </li>
               <li>
                 Submit your orders. When both players have submitted, every army
@@ -1558,8 +1558,8 @@ function GatherPrompt({
       </div>
       <p className="muted small">
         This hex holds both a Base and a Refinery. Pick the structure this
-        Worker is assigned to for the end of the round. Each structure turns up
-        to three assigned Workers into resources.
+        Worker is assigned to for the end of the round. A Base turns up to seven
+        assigned Workers into minerals; a Refinery turns up to three into gas.
       </p>
       <div className="play-gather-buttons">
         {options.map((option) => (
@@ -1570,7 +1570,7 @@ function GatherPrompt({
             onClick={() => onChoose(option)}
           >
             {option === "base"
-              ? "Base · up to 3 ◆ minerals"
+              ? "Base · up to 7 ◆ minerals"
               : "Refinery · up to 3 ▲ gas"}
           </button>
         ))}
@@ -2314,7 +2314,9 @@ function StarterPlay() {
               <li>A hex shows a dot in its owner's colour instead of each piece.</li>
               <li>
                 Each unit moves once per turn. Structures hold their hex; a
-                selected Base trains Workers and a Barracks trains Soldiers.
+                selected Base trains Workers and a Barracks trains Soldiers. Both
+                sides start with three Workers on their Base and no Soldiers, so
+                build a Barracks before fielding an army.
               </li>
               <li>
                 Select a Worker or a stack of Workers to build a structure on the
@@ -2324,8 +2326,8 @@ function StarterPlay() {
               </li>
               <li>
                 Node hexes sit at the middle of each side. A Base on a mineral
-                node turns up to 3 assigned Workers into 3◆; a Refinery on a gas
-                node does the same for gas (▲). Extra Workers add nothing, and
+                node turns up to 7 assigned Workers into 7◆; a Refinery on a gas
+                node turns up to 3 into 3▲. Extra Workers add nothing, and
                 structures off a node produce nothing.
               </li>
               <li>

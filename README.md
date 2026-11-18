@@ -62,8 +62,10 @@ income calculator and a notes pad. Progress and notes are kept in
 the five-character code; the other enters it under **Join Game**. Once paired, the
 matching screen gives way to the starter map: a large hexagon three hexes along
 each side, with Player A on the top edge and Player B on the bottom edge. The
-middle hex of each side carries a mineral node and a gas node. An occupied hex
-shows a dot in its owner's colour rather than every piece. Click one of your hexes
+middle hex of each side carries a mineral node and a gas node. Each side starts
+with a Base and three Workers standing on it; there are no Soldiers until a
+Barracks trains one. An occupied hex shows a dot in its owner's colour rather
+than every piece. Click one of your hexes
 to list everything stacked there in the hex panel on the left. Identical pieces
 share a row such as "Soldier x3", and Workers name their assigned structure such
 as "Worker (Base) x3" or "Worker (Refinery)"; clicking a row selects the whole
@@ -89,9 +91,9 @@ conflict is fought with the same battle engine as the Battle Lab. The host
 resolves the battle phase; the guest sees the conflict borders and waits. Damage
 persists between rounds, and a surviving defender structure keeps its hex even
 when every defending unit is gone. After the battles each Base on a mineral node
-turns up to three assigned Workers into minerals, and each Refinery on a gas node
-does the same for gas. Extra Workers beyond three add nothing, and a structure off
-a matching node produces nothing. When a hex holds both structures, the Worker is
+turns up to seven assigned Workers into minerals, and each Refinery on a gas node
+turns up to three into gas. Extra Workers beyond those caps add nothing, and a
+structure off a matching node produces nothing. When a hex holds both structures, the Worker is
 assigned to the one chosen when it moved in; select that Worker and click its own
 hex to switch the choice for later rounds. The next round then begins. Resources
 buy builds. **Forfeit** declares the opponent the winner and returns both players
@@ -125,10 +127,10 @@ moves to async multiplayer or a server, those modules come along unchanged.
 
 Settled with the designer:
 
-- **Income** — a Base on a mineral node turns up to three assigned Workers into 3
-  minerals; a Refinery on a gas node does the same for gas. Additional Workers add
-  nothing, structures off a matching node produce nothing, and enemy structures
-  never produce for you. When a hex holds both your Base and Refinery, the Worker
+- **Income** — a Base on a mineral node turns up to seven assigned Workers into 7
+  minerals; a Refinery on a gas node turns up to three into 3 gas. Additional
+  Workers add nothing, structures off a matching node produce nothing, and enemy
+  structures never produce for you. When a hex holds both your Base and Refinery, the Worker
   joins the structure chosen when it moved in; selecting the Worker and clicking
   its own hex changes that assignment for later rounds.
 - **Supply** — the printed card counts are hard per-player limits (12 workers, 12

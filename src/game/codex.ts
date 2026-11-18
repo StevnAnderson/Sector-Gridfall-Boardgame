@@ -82,7 +82,7 @@ export const CARD_DEFINITIONS: CardDefinition[] = [
     produces: ["workers", "minerals"],
     unlocks: ["refinery", "barracks"],
     blurb:
-      "Your foothold. Trains Workers and, on a mineral node, turns up to 3 assigned Workers into minerals. Losing it ends your game.",
+      "Your foothold. Trains Workers and, on a mineral node, turns up to 7 assigned Workers into minerals. Losing it ends your game.",
     glyph: "⌂",
   },
   {

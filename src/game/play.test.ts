@@ -31,6 +31,25 @@ import {
   type Player,
 } from "./play";
 
+/**
+ * The classic one-Worker/one-Soldier layout. Movement and combat tests use it so
+ * changing the real starting map does not silently rewrite their scenarios.
+ */
+function createSkirmishState(): PlayState {
+  const state = createInitialState();
+  return {
+    ...state,
+    units: [
+      { id: "a-base", owner: "a", typeId: "base", col: 2, row: 0, moved: false },
+      { id: "a-worker", owner: "a", typeId: "worker", col: 1, row: 0, moved: false },
+      { id: "a-soldier", owner: "a", typeId: "soldier", col: 3, row: 0, moved: false },
+      { id: "b-base", owner: "b", typeId: "base", col: 2, row: 4, moved: false },
+      { id: "b-worker", owner: "b", typeId: "worker", col: 1, row: 4, moved: false },
+      { id: "b-soldier", owner: "b", typeId: "soldier", col: 3, row: 4, moved: false },
+    ],
+  };
+}
+
 describe("starter map", () => {
   it("is a nineteen-hex large hex with a dual node at every side centre", () => {
     expect(MAP_COLS).toBe(5);
@@ -63,29 +82,43 @@ describe("starter map", () => {
     expect(state.turn).toBe(1);
   });
 
-  it("starts each Base on a node next to its Worker and Soldier", () => {
+  it("starts each side with three Workers on its Base and no Soldiers", () => {
     const state = createInitialState();
     for (const player of ["a", "b"] as const) {
       const base = state.units.find(
         (unit) => unit.owner === player && unit.typeId === "base",
       );
-      const worker = state.units.find(
+      const workers = state.units.filter(
         (unit) => unit.owner === player && unit.typeId === "worker",
-      );
-      const soldier = state.units.find(
-        (unit) => unit.owner === player && unit.typeId === "soldier",
       );
 
       expect(base).toBeDefined();
-      expect(worker).toBeDefined();
-      expect(soldier).toBeDefined();
-      expect(isAdjacent(base!, worker!)).toBe(true);
-      expect(isAdjacent(base!, soldier!)).toBe(true);
+      expect(workers).toHaveLength(3);
+      expect(
+        workers.every(
+          (worker) =>
+            worker.col === base!.col &&
+            worker.row === base!.row &&
+            !worker.moved,
+        ),
+      ).toBe(true);
+      expect(
+        state.units.some(
+          (unit) => unit.owner === player && unit.typeId === "soldier",
+        ),
+      ).toBe(false);
       expect(
         MAP_TILES.find((tile) => tile.col === base!.col && tile.row === base!.row)
           ?.resources,
       ).toEqual(["minerals", "gas"]);
     }
+    expect(state.units).toHaveLength(8);
+  });
+
+  it("starts each Base with three mineable Workers", () => {
+    const state = createInitialState();
+    expect(harvestFor(state, "a")).toEqual({ minerals: 3, gas: 0 });
+    expect(harvestFor(state, "b")).toEqual({ minerals: 3, gas: 0 });
   });
 });
 
@@ -104,7 +137,7 @@ describe("hex neighbours", () => {
 
 describe("movement", () => {
   it("moves an active unit one adjacent hex and blocks a second move", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const worker = unitById(state, "a-worker");
     if (!worker) throw new Error("missing worker");
 
@@ -115,7 +148,7 @@ describe("movement", () => {
   });
 
   it("cannot move bases or enemy units, but enemy-held hexes are attack targets", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const base = unitById(state, "a-base");
     const enemy = unitById(state, "b-worker");
     if (!base || !enemy) throw new Error("missing units");
@@ -136,7 +169,7 @@ describe("movement", () => {
   });
 
   it("lets allied pieces stack on the same hex", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const soldier = unitById(state, "a-soldier");
     if (!soldier) throw new Error("missing soldier");
 
@@ -150,7 +183,7 @@ describe("movement", () => {
   });
 
   it("lets several selected pieces march together to one hex", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
 
     const moved = moveUnits(state, ["a-worker", "a-soldier"], 2, 0);
 
@@ -163,7 +196,7 @@ describe("movement", () => {
   });
 
   it("fights immediately when a practice move enters an enemy-held hex", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const units = state.units.map((unit) => {
       if (unit.id === "a-soldier") return { ...unit, col: 1, row: 2 };
       if (unit.id === "b-worker") return { ...unit, col: 1, row: 3 };
@@ -181,7 +214,7 @@ describe("movement", () => {
   });
 
   it("cannot move to a non-adjacent hex", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const soldier = unitById(state, "a-soldier");
     if (!soldier) throw new Error("missing soldier");
 
@@ -191,7 +224,7 @@ describe("movement", () => {
 
 describe("turns and harvesting", () => {
   it("collects a mineral for a Worker standing on its Base when the turn ends", () => {
-    let state = createInitialState();
+    let state = createSkirmishState();
     const worker = unitById(state, "a-worker");
     const base = unitById(state, "a-base");
     if (!worker || !base) throw new Error("missing units");
@@ -213,7 +246,7 @@ describe("turns and harvesting", () => {
   });
 
   it("counts a completed round after Player B ends their turn", () => {
-    let state = createInitialState();
+    let state = createSkirmishState();
     state = endTurn(state);
     expect(state.turn).toBe(1);
 
@@ -223,7 +256,7 @@ describe("turns and harvesting", () => {
   });
 
   it("gives the incoming player a fresh move without stacking resources", () => {
-    let state = createInitialState();
+    let state = createSkirmishState();
     const worker = unitById(state, "a-worker");
     const base = unitById(state, "a-base");
     if (!worker || !base) throw new Error("missing units");
@@ -245,7 +278,7 @@ describe("turns and harvesting", () => {
 
 describe("simultaneous rounds", () => {
   it("moves both players' units in the same round and harvests for both", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
 
     const next = resolveRound(state, {
       a: [
@@ -277,7 +310,7 @@ describe("simultaneous rounds", () => {
   });
 
   it("lets several allied units enter the same hex in one round", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
 
     const next = resolveRound(state, {
       a: [
@@ -294,10 +327,10 @@ describe("simultaneous rounds", () => {
     ]);
   });
 
-  it("caps a Base at three minerals per turn", () => {
-    const state = createInitialState();
-    const extraWorkers: PlayUnit[] = [2, 3, 4].map((index) => ({
-      id: `a-worker-${index}`,
+  it("caps a Base at seven minerals per turn", () => {
+    const state = createSkirmishState();
+    const extraWorkers: PlayUnit[] = Array.from({ length: 7 }, (_, i) => ({
+      id: `a-worker-${i + 2}`,
       owner: "a",
       typeId: "worker",
       col: 2,
@@ -312,11 +345,11 @@ describe("simultaneous rounds", () => {
     ];
     const stacked = { ...state, units };
 
-    expect(harvestFor(stacked, "a")).toEqual({ minerals: 3, gas: 0 });
+    expect(harvestFor(stacked, "a")).toEqual({ minerals: 7, gas: 0 });
   });
 
   it("ignores forged, impossible and duplicate moves", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
 
     const next = resolveRound(state, {
       a: [
@@ -341,7 +374,7 @@ describe("simultaneous rounds", () => {
   });
 
   it("creates a conflict when both players enter the same empty hex", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const units = state.units.map((unit) => {
       if (unit.id === "a-worker") return { ...unit, col: 1, row: 2 };
       if (unit.id === "b-worker") return { ...unit, col: 2, row: 3 };
@@ -379,7 +412,7 @@ describe("simultaneous rounds", () => {
   });
 
   it("advances the round when both sides hold position", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
 
     const next = resolveRound(state, { a: [], b: [] });
 
@@ -391,7 +424,7 @@ describe("simultaneous rounds", () => {
 
 describe("conflict and battle phase", () => {
   it("moves into an enemy-held hex when the enemy vacates it", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const units = state.units.map((unit) => {
       if (unit.id === "a-soldier") return { ...unit, col: 1, row: 2 };
       if (unit.id === "b-worker") return { ...unit, col: 1, row: 3 };
@@ -414,7 +447,7 @@ describe("conflict and battle phase", () => {
   });
 
   it("holds an attack when the enemy stays, then resolves the battle", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const units = state.units.map((unit) => {
       if (unit.id === "a-soldier") return { ...unit, col: 1, row: 2 };
       if (unit.id === "b-worker") return { ...unit, col: 1, row: 3 };
@@ -456,7 +489,7 @@ describe("conflict and battle phase", () => {
   });
 
   it("merges allied groups attacking the same hex into one battle", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const units = state.units.map((unit) => {
       if (unit.id === "a-soldier") return { ...unit, col: 1, row: 2 };
       if (unit.id === "a-worker") return { ...unit, col: 0, row: 3 };
@@ -495,7 +528,7 @@ describe("conflict and battle phase", () => {
   });
 
   it("keeps a surviving defender structure on the contested hex", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const units = state.units.map((unit) => {
       if (unit.id === "a-soldier") return { ...unit, col: 1, row: 1 };
       if (unit.id === "b-base") return { ...unit, col: 1, row: 2 };
@@ -518,7 +551,7 @@ describe("conflict and battle phase", () => {
   });
 
   it("backfills phase fields on states saved before battles existed", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const legacy = { ...state } as Partial<PlayState>;
     delete legacy.phase;
     delete legacy.conflicts;
@@ -534,7 +567,7 @@ describe("conflict and battle phase", () => {
 
 describe("construction and training", () => {
   it("spends a Worker's action and stock to build on its hex", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const next = buildUnit(state, "a", "a-worker", "refinery");
 
     expect(next.stock.a).toEqual({
@@ -551,7 +584,7 @@ describe("construction and training", () => {
   });
 
   it("lets a Base train a Worker on its own hex", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const next = buildUnit(state, "a", "a-base", "worker");
 
     expect(next.stock.a).toEqual({
@@ -569,7 +602,7 @@ describe("construction and training", () => {
   });
 
   it("lets a Barracks train a Soldier on its own hex", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const barracks: PlayUnit = {
       id: "a-barracks-1",
       owner: "a",
@@ -597,7 +630,7 @@ describe("construction and training", () => {
   });
 
   it("requires the unlocking structure before building advanced cards", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     expect(canBuild(state, "a", "a-worker", "factory")).toMatchObject({
       ok: false,
       reason: "Requires Barracks",
@@ -626,7 +659,7 @@ describe("construction and training", () => {
   });
 
   it("ignores a build order for a card the piece cannot make", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const next = resolveRound(state, {
       a: { moves: [], builds: [{ builderId: "a-worker", typeId: "soldier" }] },
       b: { moves: [], builds: [] },
@@ -637,7 +670,7 @@ describe("construction and training", () => {
   });
 
   it("resolves construction before movement and refreshes the builder next round", () => {
-    const next = resolveRound(createInitialState(), {
+    const next = resolveRound(createSkirmishState(), {
       a: {
         moves: [{ unitId: "a-soldier", col: 2, row: 1 }],
         builds: [{ builderId: "a-worker", typeId: "refinery" }],
@@ -652,7 +685,7 @@ describe("construction and training", () => {
   });
 
   it("keeps a building Worker out of the harvest for that round", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const onBase: PlayState = {
       ...state,
       units: state.units.map((unit) =>
@@ -675,7 +708,7 @@ describe("construction and training", () => {
   });
 
   it("lists build window options for Workers and Bases only", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const workerOptions = buildOptions(state, "a", "a-worker");
 
     expect(workerOptions.map((option) => option.typeId)).toEqual(
@@ -745,7 +778,7 @@ describe("structure harvesting", () => {
 
   /** A round-ready state with A's Worker standing on its Base + Refinery. */
   function workerOnDualHex(gatherFrom?: GatherFrom): PlayState {
-    let state = addStructure(createInitialState(), "a", "refinery", 2, 0);
+    let state = addStructure(createSkirmishState(), "a", "refinery", 2, 0);
     state = moveUnit(state, "a-worker", 2, 0, gatherFrom);
     return {
       ...state,
@@ -754,7 +787,7 @@ describe("structure harvesting", () => {
   }
 
   it("gathers gas from a Refinery on a gas node", () => {
-    const state = addStructure(createInitialState(), "a", "refinery", 0, 1);
+    const state = addStructure(createSkirmishState(), "a", "refinery", 0, 1);
     const worker = moveUnit(state, "a-worker", 0, 1);
     const placed = unitById(worker, "a-worker");
     if (!placed) throw new Error("missing worker");
@@ -769,7 +802,7 @@ describe("structure harvesting", () => {
 
   it("produces nothing when the structure is off a node", () => {
     const withRefinery = addStructure(
-      createInitialState(),
+      createSkirmishState(),
       "a",
       "refinery",
       1,
@@ -778,7 +811,7 @@ describe("structure harvesting", () => {
     expect(gatherOptionsAt(withRefinery, "a", 1, 0)).toEqual([]);
     expect(harvestFor(withRefinery, "a")).toEqual({ minerals: 0, gas: 0 });
 
-    let withBase = addStructure(createInitialState(), "a", "base", 1, 1);
+    let withBase = addStructure(createSkirmishState(), "a", "base", 1, 1);
     withBase = {
       ...withBase,
       units: withBase.units.map((unit) =>
@@ -790,7 +823,7 @@ describe("structure harvesting", () => {
   });
 
   it("ignores structures owned by the other player", () => {
-    const state = createInitialState();
+    const state = createSkirmishState();
     const occupied: PlayState = {
       ...state,
       units: state.units.map((unit) =>
@@ -820,7 +853,7 @@ describe("structure harvesting", () => {
   });
 
   it("remembers the structure chosen when moving onto a dual hex", () => {
-    let state = addStructure(createInitialState(), "a", "refinery", 2, 0);
+    let state = addStructure(createSkirmishState(), "a", "refinery", 2, 0);
     state = moveUnit(state, "a-worker", 2, 0, "refinery");
     const worker = unitById(state, "a-worker");
     if (!worker) throw new Error("missing worker");
@@ -845,7 +878,7 @@ describe("structure harvesting", () => {
   });
 
   it("applies a choice sent with a simultaneous move", () => {
-    const state = addStructure(createInitialState(), "a", "refinery", 2, 0);
+    const state = addStructure(createSkirmishState(), "a", "refinery", 2, 0);
     const next = resolveRound(state, {
       a: {
         moves: [{ unitId: "a-worker", col: 2, row: 0 }],
@@ -888,7 +921,7 @@ describe("structure harvesting", () => {
   });
 
   it("ignores a choice when the destination has only one structure", () => {
-    const next = resolveRound(createInitialState(), {
+    const next = resolveRound(createSkirmishState(), {
       a: {
         moves: [{ unitId: "a-worker", col: 2, row: 0 }],
         builds: [],
@@ -919,10 +952,10 @@ describe("structure harvesting", () => {
     expect(next.stock.a).toEqual(STARTING_STOCK);
   });
 
-  it("caps each structure at three assigned Workers", () => {
-    const state = addStructure(createInitialState(), "a", "refinery", 2, 0);
+  it("caps each structure at its own income limit", () => {
+    const state = addStructure(createSkirmishState(), "a", "refinery", 2, 0);
     const workers: PlayUnit[] = [
-      ...Array.from({ length: 4 }, (_, index) => ({
+      ...Array.from({ length: 8 }, (_, index) => ({
         id: `a-worker-base-${index}`,
         owner: "a" as const,
         typeId: "worker" as const,
@@ -951,6 +984,6 @@ describe("structure harvesting", () => {
       ],
     };
 
-    expect(harvestFor(stacked, "a")).toEqual({ minerals: 3, gas: 3 });
+    expect(harvestFor(stacked, "a")).toEqual({ minerals: 7, gas: 3 });
   });
 });

@@ -10,9 +10,9 @@
  * the next round begins.
  *
  * Workers harvest at the end of the round. A Base on a mineral node turns up to
- * three assigned Workers into minerals at 1 each; a Refinery on a gas node does
- * the same for gas. A hex holding both structures makes the Worker pick one; the
- * choice is remembered until it moves again. Structures off a node produce
+ * seven assigned Workers into minerals at 1 each; a Refinery on a gas node turns
+ * up to three into gas. A hex holding both structures makes the Worker pick one;
+ * the choice is remembered until it moves again. Structures off a node produce
  * nothing, and extra Workers beyond the cap add nothing.
  *
  * This is deliberately framework-free so the movement/harvest rules can be
@@ -210,8 +210,11 @@ export type PlayAction =
 export const MAP_COLS = 5;
 export const MAP_ROWS = 5;
 
-/** One structure can turn at most this many assigned Workers into resources. */
-export const HARVEST_CAP = 3;
+/** A Base can turn at most this many assigned Workers into minerals. */
+export const BASE_HARVEST_CAP = 7;
+
+/** A Refinery can turn at most this many assigned Workers into gas. */
+export const REFINERY_HARVEST_CAP = 3;
 
 /** A small opening stock so the first construction phase has something to spend. */
 export const STARTING_STOCK: Stock = { minerals: 4, gas: 0 };
@@ -683,11 +686,13 @@ export function createInitialState(): PlayState {
   return {
     units: [
       { id: "a-base", owner: "a", typeId: "base", col: 2, row: 0, moved: false },
-      { id: "a-worker", owner: "a", typeId: "worker", col: 1, row: 0, moved: false },
-      { id: "a-soldier", owner: "a", typeId: "soldier", col: 3, row: 0, moved: false },
+      { id: "a-worker", owner: "a", typeId: "worker", col: 2, row: 0, moved: false },
+      { id: "a-worker-2", owner: "a", typeId: "worker", col: 2, row: 0, moved: false },
+      { id: "a-worker-3", owner: "a", typeId: "worker", col: 2, row: 0, moved: false },
       { id: "b-base", owner: "b", typeId: "base", col: 2, row: 4, moved: false },
-      { id: "b-worker", owner: "b", typeId: "worker", col: 1, row: 4, moved: false },
-      { id: "b-soldier", owner: "b", typeId: "soldier", col: 3, row: 4, moved: false },
+      { id: "b-worker", owner: "b", typeId: "worker", col: 2, row: 4, moved: false },
+      { id: "b-worker-2", owner: "b", typeId: "worker", col: 2, row: 4, moved: false },
+      { id: "b-worker-3", owner: "b", typeId: "worker", col: 2, row: 4, moved: false },
     ],
     active: "a",
     turn: 1,
@@ -695,7 +700,9 @@ export function createInitialState(): PlayState {
       a: { ...STARTING_STOCK },
       b: { ...STARTING_STOCK },
     },
-    log: ["Click one of your hexes to inspect the pieces there."],
+    log: [
+      "Each side starts with three Workers on its Base. Click a hex to inspect it.",
+    ],
     winner: null,
     phase: "planning",
     conflicts: [],
@@ -832,8 +839,9 @@ export function moveUnits(
 
 /**
  * Resources the given player's Workers would collect if the turn ended now.
- * Each Base/Refinery on a matching node turns at most HARVEST_CAP assigned
- * Workers into resources; extra Workers on the same structure add nothing.
+ * Each Base on a matching node turns at most BASE_HARVEST_CAP assigned Workers
+ * into minerals, and each Refinery turns at most REFINERY_HARVEST_CAP into gas.
+ * Extra Workers on the same structure add nothing.
  */
 export function harvestFor(state: PlayState, player: Player): Stock {
   const gained: Stock = { minerals: 0, gas: 0 };
@@ -856,8 +864,11 @@ export function harvestFor(state: PlayState, player: Player): Stock {
     const [col, row] = key.split(",").map(Number);
     if (col === undefined || row === undefined) continue;
     const sites = producingStructuresAt(state, player, col, row);
-    gained.minerals += Math.min(counts.base, sites.base * HARVEST_CAP);
-    gained.gas += Math.min(counts.refinery, sites.refinery * HARVEST_CAP);
+    gained.minerals += Math.min(counts.base, sites.base * BASE_HARVEST_CAP);
+    gained.gas += Math.min(
+      counts.refinery,
+      sites.refinery * REFINERY_HARVEST_CAP,
+    );
   }
 
   return gained;
