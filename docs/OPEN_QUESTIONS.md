@@ -12,9 +12,10 @@ minerals at 1 each; a Refinery on a gas node turns up to three into gas. Extra
 Workers add nothing, structures off their matching node produce nothing, and only
 the worker owner's structures count. A hex holding both a Base and a Refinery
 assigns each Worker to the structure chosen when it moved in; selecting one or
-more Workers and clicking their own hex, or using Change harvest, re-picks the
-structure for later rounds. The Turn Flow income panel caps a Base at five and a
-Refinery at three.
+more Workers and clicking their own hex, or using Split harvest, re-picks the
+structure for later rounds. A stack can be split with a count for minerals and a
+count for gas, so not every Worker has to switch at once. The Turn Flow income
+panel caps a Base at five and a Refinery at three.
 
 **Elimination** — a player whose last structure is destroyed loses immediately;
 the opponent wins. Both players losing their last structure in the same battle

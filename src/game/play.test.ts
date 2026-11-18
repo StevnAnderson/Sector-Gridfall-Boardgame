@@ -987,6 +987,44 @@ describe("structure harvesting", () => {
 
     expect(harvestFor(stacked, "a")).toEqual({ minerals: 5, gas: 3 });
   });
+
+  it("accepts per-Worker gather assignments when a stack enters a dual hex", () => {
+    const state = createInitialState();
+    const movers = ["a-worker", "a-worker-2"].map((id) => ({
+      ...state.units.find((unit) => unit.id === id)!,
+      col: 2,
+      row: 1,
+    }));
+    const staged: PlayState = {
+      ...state,
+      units: [
+        ...state.units.filter((unit) => !movers.some((mover) => mover.id === unit.id)),
+        ...movers,
+        { id: "a-dual-base", owner: "a", typeId: "base", col: 3, row: 1, moved: false },
+        {
+          id: "a-dual-refinery",
+          owner: "a",
+          typeId: "refinery",
+          col: 3,
+          row: 1,
+          moved: false,
+        },
+      ],
+    };
+
+    const next = moveUnits(
+      staged,
+      movers.map((unit) => unit.id),
+      3,
+      1,
+      undefined,
+      { "a-worker": "refinery", "a-worker-2": "base" },
+    );
+
+    expect(unitById(next, "a-worker")?.gatherFrom).toBe("refinery");
+    expect(unitById(next, "a-worker-2")?.gatherFrom).toBe("base");
+    expect(harvestFor(next, "a")).toEqual({ minerals: 2, gas: 1 });
+  });
 });
 
 describe("elimination", () => {

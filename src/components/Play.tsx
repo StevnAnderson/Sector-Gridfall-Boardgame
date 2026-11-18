@@ -722,6 +722,7 @@ function OnlineStarter({
     unitIds: string[],
     tile: MapTile,
     gatherFrom?: GatherFrom,
+    assignments?: Record<string, GatherFrom>,
   ) => {
     const ids = new Set(unitIds);
     const workers = unitIds
@@ -740,9 +741,10 @@ function OnlineStarter({
     // A moved Worker's old gather choice never carries to its new hex.
     setHarvests((current) => [
       ...current.filter((choice) => !ids.has(choice.unitId)),
-      ...(gatherFrom
-        ? workers.map((unit) => ({ unitId: unit.id, gatherFrom }))
-        : []),
+      ...workers.map((unit) => ({
+        unitId: unit.id,
+        gatherFrom: assignments?.[unit.id] ?? gatherFrom,
+      })).filter((choice): choice is HarvestChoice => choice.gatherFrom !== undefined),
     ]);
     setSelectedIds([]);
     setInspectedId(tile.id);
@@ -813,6 +815,25 @@ function OnlineStarter({
       move: false,
     });
     setInspectedId(tile.id);
+  };
+
+  const applyHarvestSplit = (next: Record<string, GatherFrom>) => {
+    const pending = pendingGather;
+    if (!pending) return;
+    if (pending.move) {
+      const tile = MAP_TILES.find((entry) => entry.id === pending.tileId);
+      if (tile) queueMoves(pending.unitIds, tile, undefined, next);
+      else setPendingGather(null);
+      return;
+    }
+
+    const ids = Object.keys(next);
+    setHarvests((current) => [
+      ...current.filter((choice) => !ids.includes(choice.unitId)),
+      ...ids.map((unitId) => ({ unitId, gatherFrom: next[unitId]! })),
+    ]);
+    setPendingGather(null);
+    setInspectedId(pending.tileId);
   };
 
   const toggleSelection = (unitIds: string[]) => {
@@ -964,10 +985,12 @@ function OnlineStarter({
 
           {pendingGather && (
             <GatherPrompt
+              key={`${pendingGather.move}-${pendingGather.unitIds.join("-")}`}
               state={state}
               player={me}
               pending={pendingGather}
               onChoose={chooseGather}
+              onChooseSplit={applyHarvestSplit}
               onCancel={() => setPendingGather(null)}
             />
           )}
@@ -1143,7 +1166,8 @@ function OnlineStarter({
                 turns up to five assigned Workers into minerals, a Refinery up
                 to three into gas. If both stand there, choose when you move in;
                 to change the choice select the Workers and click their own hex,
-                or use Change harvest in the hex panel.
+                or use Change harvest in the hex panel. A stack can be split,
+                with a count chosen for minerals and for gas.
               </li>
               <li>
                 Submit your orders. When both players have submitted, every army
@@ -1573,41 +1597,143 @@ function GatherPrompt({
   player,
   pending,
   onChoose,
+  onChooseSplit,
   onCancel,
 }: {
   state: PlayState;
   player: Player;
   pending: PendingGather;
   onChoose: (gatherFrom: GatherFrom) => void;
+  onChooseSplit: (assignments: Record<string, GatherFrom>) => void;
   onCancel: () => void;
 }) {
   const options = gatherOptionsAt(state, player, pending.col, pending.row);
-  const assigned = pending.unitIds
+  const workers = pending.unitIds
     .map((id) => unitById(state, id))
-    .filter((unit): unit is PlayUnit => unit !== undefined)
-    .map((unit) => unit.gatherFrom ?? "base");
+    .filter((unit): unit is PlayUnit => unit !== undefined);
+  const assignments: Record<string, GatherFrom> = {};
+  for (const unit of workers) assignments[unit.id] = unit.gatherFrom ?? "base";
   const current: GatherFrom | null =
     !pending.move &&
-    assigned.length > 0 &&
-    assigned.every((value) => value === assigned[0])
-      ? assigned[0]!
+    workers.length === 1 &&
+    options.length > 0
+      ? assignments[workers[0]!.id]!
       : null;
+  const split = workers.length > 1;
+  const [baseCount, setBaseCount] = useState(
+    pending.move
+      ? workers.length
+      : workers.filter((unit) => assignments[unit.id] === "base").length,
+  );
+  const refineryCount = workers.length - baseCount;
+  const location = tileLabel(pending.col, pending.row);
+
+  // Reassign the Workers already on gas first, then fill from the mineral side,
+  // so raising or lowering a count changes as few assignments as possible.
+  const applySplit = () => {
+    const gasIds = [
+      ...workers.filter((unit) => assignments[unit.id] === "refinery").map((unit) => unit.id),
+      ...workers.filter((unit) => assignments[unit.id] !== "refinery").map((unit) => unit.id),
+    ].slice(0, refineryCount);
+    const gas = new Set(gasIds);
+    const next: Record<string, GatherFrom> = {};
+    for (const unit of workers) {
+      next[unit.id] = gas.has(unit.id) ? "refinery" : "base";
+    }
+    onChooseSplit(next);
+  };
+
+  if (split) {
+    return (
+      <section className="play-gather" aria-label="Choose how many Workers gather from each structure">
+        <div className="panel-head">
+          <h3>Split harvest</h3>
+          <span className="muted small">{location}</span>
+        </div>
+        <p className="muted small">
+          Choose how many of the {workers.length} {pending.move ? "moving" : "selected"} Workers
+          gather from each structure at this hex. The other count adjusts to
+          match.
+        </p>
+        <ul className="play-move-count-list">
+          <li>
+            <span className="play-move-count-label">
+              ◆ Base · minerals (cap 5)
+            </span>
+            <span className="play-move-count-stepper">
+              <button
+                className="btn ghost"
+                type="button"
+                onClick={() => setBaseCount(baseCount - 1)}
+                disabled={baseCount <= 0}
+                aria-label="One fewer Worker on minerals"
+              >
+                −
+              </button>
+              <strong>{baseCount}</strong>
+              <button
+                className="btn ghost"
+                type="button"
+                onClick={() => setBaseCount(baseCount + 1)}
+                disabled={baseCount >= workers.length}
+                aria-label="One more Worker on minerals"
+              >
+                +
+              </button>
+            </span>
+          </li>
+          <li>
+            <span className="play-move-count-label">
+              ▲ Refinery · gas (cap 3)
+            </span>
+            <span className="play-move-count-stepper">
+              <button
+                className="btn ghost"
+                type="button"
+                onClick={() => setBaseCount(baseCount + 1)}
+                disabled={refineryCount <= 0}
+                aria-label="One fewer Worker on gas"
+              >
+                −
+              </button>
+              <strong>{refineryCount}</strong>
+              <button
+                className="btn ghost"
+                type="button"
+                onClick={() => setBaseCount(baseCount - 1)}
+                disabled={refineryCount >= workers.length}
+                aria-label="One more Worker on gas"
+              >
+                +
+              </button>
+            </span>
+          </li>
+        </ul>
+        <div className="play-gather-buttons">
+          <button className="btn primary" type="button" onClick={applySplit}>
+            Apply split
+          </button>
+          <button className="btn ghost" type="button" onClick={onCancel}>
+            Cancel
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="play-gather" aria-label="Choose a structure to gather from">
       <div className="panel-head">
         <h3>{pending.move ? "Gather from" : "Change harvest"}</h3>
         <span className="muted small">
-          {tileLabel(pending.col, pending.row)}
+          {location}
         </span>
       </div>
       <p className="muted small">
-        This hex holds both a Base and a Refinery. Pick the structure{" "}
-        {pending.unitIds.length > 1
-          ? `all ${pending.unitIds.length} selected Workers should gather from`
-          : "this Worker should gather from"}{" "}
-        for the end of the round. A Base turns up to five assigned Workers into
-        minerals; a Refinery turns up to three into gas.
+        This hex holds both a Base and a Refinery. Pick the structure this
+        Worker should gather from for the end of the round. A Base turns up to
+        five assigned Workers into minerals; a Refinery turns up to three into
+        gas.
       </p>
       <div className="play-gather-buttons">
         {options.map((option) => (
@@ -1931,7 +2057,7 @@ function HexInspector({
               }
             >
               {harvestWorkers.length > 1
-                ? `Change harvest for ${harvestWorkers.length} Workers`
+                ? `Split harvest for ${harvestWorkers.length} Workers`
                 : "Change harvest"}
             </button>
           )}
@@ -1947,7 +2073,7 @@ function HexInspector({
             <p className="muted small">
               {harvestWorkers.length > 0
                 ? harvestWorkers.length > 1
-                  ? "Use Change harvest (or click this hex again) to switch these Workers between Base and Refinery."
+                  ? "Use Change harvest (or click this hex again) to split these Workers between Base and Refinery."
                   : "Use Change harvest (or click this hex again) to switch this Worker between Base and Refinery."
                 : selectedIds.length > 0
                   ? `${selectedIds.length} selected. Click a highlighted neighbour to march the group together.`
@@ -2142,6 +2268,37 @@ function StarterPlay() {
     setInspectedId(tile.id);
   };
 
+  const applyHarvestSplit = (next: Record<string, GatherFrom>) => {
+    const pending = pendingGather;
+    if (!pending) return;
+    if (pending.move) {
+      const moved = moveUnits(
+        state,
+        pending.unitIds,
+        pending.col,
+        pending.row,
+        undefined,
+        next,
+      );
+      if (moved !== state) {
+        setState(moved);
+        setSelectedIds([]);
+      }
+      setPendingGather(null);
+      setInspectedId(pending.tileId);
+      return;
+    }
+
+    let updated = state;
+    for (const [unitId, from] of Object.entries(next)) {
+      const candidate = setGatherPreference(updated, state.active, unitId, from);
+      if (candidate !== updated) updated = candidate;
+    }
+    if (updated !== state) setState(updated);
+    setPendingGather(null);
+    setInspectedId(pending.tileId);
+  };
+
   /** Move the group now, asking for a gather assignment when the hex offers both. */
   const beginMove = (tile: MapTile, unitIds: string[]) => {
     if (unitIds.length === 0) return;
@@ -2332,10 +2489,12 @@ function StarterPlay() {
 
           {pendingGather && (
             <GatherPrompt
+              key={`${pendingGather.move}-${pendingGather.unitIds.join("-")}`}
               state={state}
               player={state.active}
               pending={pendingGather}
               onChoose={chooseGather}
+              onChooseSplit={applyHarvestSplit}
               onCancel={() => setPendingGather(null)}
             />
           )}
@@ -2435,7 +2594,9 @@ function StarterPlay() {
                 If a hex holds both your Base and Refinery, choose the structure
                 when the Workers move in. To change the choice for one or more
                 Workers, select them and click their own hex, or use Change
-                harvest in the hex panel — this costs no action.
+                harvest in the hex panel — this costs no action. With a stack you
+                can split the count, sending some Workers to minerals and the
+                rest to gas.
               </li>
               <li>
                 Harvested resources pay for construction and training. Each side

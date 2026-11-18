@@ -813,6 +813,7 @@ export function moveUnits(
   col: number,
   row: number,
   gatherFrom?: GatherFrom,
+  gatherAssignments?: Record<string, GatherFrom>,
 ): PlayState {
   if (state.winner || state.phase !== "planning") return state;
 
@@ -860,7 +861,8 @@ export function moveUnits(
       if (!chosen.some((entry) => entry.id === unit.id)) return unit;
       const moved: PlayUnit = { ...unit, col, row, moved: true };
       if (unit.typeId === "worker") {
-        moved.gatherFrom = gatherForPosition(state, unit, col, row, gatherFrom, false);
+        const assignment = gatherAssignments?.[unit.id] ?? gatherFrom;
+        moved.gatherFrom = gatherForPosition(state, unit, col, row, assignment, false);
       }
       return moved;
     }),
