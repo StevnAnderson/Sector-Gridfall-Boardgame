@@ -382,6 +382,20 @@ function MatchFlow({
     }
   };
 
+  // An elimination arrives as ordinary match state from the host. End the
+  // online match on both tabs as soon as the result appears.
+  useEffect(() => {
+    const winner = state?.winner;
+    if (!winner) return;
+    finish(
+      winner === "draw"
+        ? "Both players lost all their structures — the game is a draw."
+        : `${PLAYER_LABEL[winner]} wins — ${PLAYER_LABEL[otherPlayer(winner)]} lost all structures.`,
+    );
+    // finish only touches refs and setters; the winner is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state?.winner]);
+
   useEffect(
     () => () => {
       matchRef.current?.leave();
@@ -1107,7 +1121,7 @@ function OnlineStarter({
               <li>
                 Workers gather from your Base (◆ minerals) or Refinery (▲ gas)
                 on their hex. The structure must stand on a matching node: a Base
-                turns up to seven assigned Workers into minerals, a Refinery up
+                turns up to five assigned Workers into minerals, a Refinery up
                 to three into gas. If both stand there, choose when you move in;
                 to change the choice click the Worker, then click its own hex.
               </li>
@@ -1122,6 +1136,11 @@ function OnlineStarter({
               <li>
                 Forfeit declares {PLAYER_LABEL[opponent]} the winner and returns
                 both players to the matching screen.
+              </li>
+              <li>
+                Losing your last structure eliminates you and the other player
+                wins. If both sides lose their last structure in the same round,
+                the game is a draw.
               </li>
               <li>If the connection drops, the tab returns to matchmaking.</li>
             </ul>
@@ -1558,7 +1577,7 @@ function GatherPrompt({
       </div>
       <p className="muted small">
         This hex holds both a Base and a Refinery. Pick the structure this
-        Worker is assigned to for the end of the round. A Base turns up to seven
+        Worker is assigned to for the end of the round. A Base turns up to five
         assigned Workers into minerals; a Refinery turns up to three into gas.
       </p>
       <div className="play-gather-buttons">
@@ -1570,7 +1589,7 @@ function GatherPrompt({
             onClick={() => onChoose(option)}
           >
             {option === "base"
-              ? "Base · up to 7 ◆ minerals"
+              ? "Base · up to 5 ◆ minerals"
               : "Refinery · up to 3 ▲ gas"}
           </button>
         ))}
@@ -2111,6 +2130,7 @@ function StarterPlay() {
   };
 
   const onTileClick = (tile: MapTile) => {
+    if (state.winner) return;
     if (state.phase === "battle") {
       setInspectedId(tile.id);
       return;
@@ -2174,8 +2194,12 @@ function StarterPlay() {
     setSelectedIds([]);
   };
 
-  const status =
-    state.phase === "battle"
+  const gameOver = Boolean(state.winner);
+  const status = state.winner
+    ? state.winner === "draw"
+      ? "Draw — both sides lost all their structures. Reset the map to play again."
+      : `${PLAYER_LABEL[state.winner]} wins — ${PLAYER_LABEL[otherPlayer(state.winner)]} was eliminated. Reset the map to play again.`
+    : state.phase === "battle"
       ? "Battle phase — resolve the conflicts before the turn can end."
       : selectedUnits.length > 0
         ? `${unitGroupLabel(state, selectedIds)} selected — click a highlighted neighbour.`
@@ -2193,6 +2217,29 @@ function StarterPlay() {
         </div>
       </SectionHeading>
 
+      {state.winner && (
+        <section className={`panel result-panel winner-${state.winner}`}>
+          <header className="result-head">
+            <div>
+              <span className="eyebrow">Game over</span>
+              <h3>
+                {state.winner === "draw"
+                  ? "Draw"
+                  : `${PLAYER_LABEL[state.winner]} wins`}
+              </h3>
+              <p className="muted">
+                {state.winner === "draw"
+                  ? "Both players lost all their structures."
+                  : `${PLAYER_LABEL[otherPlayer(state.winner)]} lost all structures and is eliminated.`}
+              </p>
+            </div>
+            <button className="btn primary" type="button" onClick={reset}>
+              Play again
+            </button>
+          </header>
+        </section>
+      )}
+
       <div className="play-layout has-inspector">
         <aside className="stack play-aside">
           <HexInspector
@@ -2200,7 +2247,7 @@ function StarterPlay() {
             tile={inspectedTile}
             viewer={state.active}
             selectedIds={selectedIds}
-            disabled={state.phase === "battle"}
+            disabled={gameOver || state.phase === "battle"}
             onToggleGroup={toggleSelection}
             onBuild={onBuild}
           />
@@ -2214,9 +2261,13 @@ function StarterPlay() {
                 {state.phase === "battle" ? " · battle phase" : ""}
               </span>
               <h3 className={`play-owner owner-${state.active}`}>
-                {state.phase === "battle"
-                  ? "Resolve the conflict"
-                  : `${PLAYER_LABEL[state.active]}'s turn`}
+                {state.winner
+                  ? state.winner === "draw"
+                    ? "Draw"
+                    : `${PLAYER_LABEL[state.winner]} wins`
+                  : state.phase === "battle"
+                    ? "Resolve the conflict"
+                    : `${PLAYER_LABEL[state.active]}'s turn`}
               </h3>
               <p className="muted small">{status}</p>
             </div>
@@ -2256,13 +2307,15 @@ function StarterPlay() {
             selectedIds={selectedIds}
             inspectedId={inspectedId}
             onTileClick={onTileClick}
-            disabled={state.phase === "battle"}
+            disabled={gameOver || state.phase === "battle"}
             canReach={(unit, col, row) => canMoveTo(state, unit, col, row)}
           />
 
           <div className="play-actions">
             <span className="muted small">
-              {state.phase === "battle" ? (
+              {gameOver ? (
+                "The game is over. Reset the map to play again."
+              ) : state.phase === "battle" ? (
                 "The battle phase must be resolved before the turn can end."
               ) : (
                 <>
@@ -2270,15 +2323,16 @@ function StarterPlay() {
                 </>
               )}
             </span>
-            {state.phase === "battle" ? (
-              <button className="btn primary" onClick={resolveBattlePhase}>
-                Resolve battles
-              </button>
-            ) : (
-              <button className="btn primary" onClick={finishTurn}>
-                End {PLAYER_LABEL[state.active]}'s turn
-              </button>
-            )}
+            {!gameOver &&
+              (state.phase === "battle" ? (
+                <button className="btn primary" onClick={resolveBattlePhase}>
+                  Resolve battles
+                </button>
+              ) : (
+                <button className="btn primary" onClick={finishTurn}>
+                  End {PLAYER_LABEL[state.active]}'s turn
+                </button>
+              ))}
           </div>
         </section>
 
@@ -2326,7 +2380,7 @@ function StarterPlay() {
               </li>
               <li>
                 Node hexes sit at the middle of each side. A Base on a mineral
-                node turns up to 7 assigned Workers into 7◆; a Refinery on a gas
+                node turns up to 5 assigned Workers into 5◆; a Refinery on a gas
                 node turns up to 3 into 3▲. Extra Workers add nothing, and
                 structures off a node produce nothing.
               </li>
@@ -2338,6 +2392,11 @@ function StarterPlay() {
               <li>
                 Harvested resources pay for construction and training. Each side
                 starts with 4◆.
+              </li>
+              <li>
+                A player loses when their last structure is destroyed. The other
+                side wins; if both lose their last structure in the same round,
+                the game is a draw.
               </li>
             </ul>
           </section>

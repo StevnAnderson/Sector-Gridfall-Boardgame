@@ -90,10 +90,12 @@ submitted, construction resolves first, then uncontested moves, then every
 conflict is fought with the same battle engine as the Battle Lab. The host
 resolves the battle phase; the guest sees the conflict borders and waits. Damage
 persists between rounds, and a surviving defender structure keeps its hex even
-when every defending unit is gone. After the battles each Base on a mineral node
-turns up to seven assigned Workers into minerals, and each Refinery on a gas node
-turns up to three into gas. Extra Workers beyond those caps add nothing, and a
-structure off a matching node produces nothing. When a hex holds both structures, the Worker is
+when every defending unit is gone. Losing every structure eliminates a player:
+the other side wins, and if both sides lose their last structure in the same
+round the game is a draw. After the battles each Base on a mineral node turns up
+to five assigned Workers into minerals, and each Refinery on a gas node turns up
+to three into gas. Extra Workers beyond those caps add nothing, and a structure
+off a matching node produces nothing. When a hex holds both structures, the Worker is
 assigned to the one chosen when it moved in; select that Worker and click its own
 hex to switch the choice for later rounds. The next round then begins. Resources
 buy builds. **Forfeit** declares the opponent the winner and returns both players
@@ -127,12 +129,14 @@ moves to async multiplayer or a server, those modules come along unchanged.
 
 Settled with the designer:
 
-- **Income** — a Base on a mineral node turns up to seven assigned Workers into 7
+- **Income** — a Base on a mineral node turns up to five assigned Workers into 5
   minerals; a Refinery on a gas node turns up to three into 3 gas. Additional
   Workers add nothing, structures off a matching node produce nothing, and enemy
   structures never produce for you. When a hex holds both your Base and Refinery, the Worker
   joins the structure chosen when it moved in; selecting the Worker and clicking
   its own hex changes that assignment for later rounds.
+- **Elimination** — a player with no structures left is out and the opponent wins.
+  Both sides losing their last structure together is a draw.
 - **Supply** — the printed card counts are hard per-player limits (12 workers, 12
   soldiers, 12 walkers, 9 artillery, 6 Bases, 8 Barracks, 6 Factories, 5 Refineries).
 - **Builds** — every card takes one turn.

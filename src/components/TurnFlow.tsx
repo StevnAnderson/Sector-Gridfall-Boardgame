@@ -28,7 +28,7 @@ const PHASES: Phase[] = [
         id: "income",
         title: "Collect income",
         detail:
-          "A Base on a mineral node gives up to 7 minerals for 7 assigned workers. A Refinery on a gas node gives up to 3 gas for 3 workers. Garrisoned workers may also repair.",
+          "A Base on a mineral node gives up to 5 minerals for 5 assigned workers. A Refinery on a gas node gives up to 3 gas for 3 workers. Garrisoned workers may also repair.",
       },
       {
         id: "advance",
@@ -246,7 +246,7 @@ export function TurnFlow() {
             </div>
             <p className="muted small">
               Each Base on a mineral node produces 1 mineral per assigned Worker,
-              up to 7. Each Refinery on a gas node produces up to 3 gas. Extra
+              up to 5. Each Refinery on a gas node produces up to 3 gas. Extra
               Workers and off-node structures produce nothing.
             </p>
           </section>

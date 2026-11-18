@@ -10,6 +10,7 @@ import {
   canMoveTo,
   canUnitMoveTo,
   createInitialState,
+  eliminationWinner,
   endTurn,
   gatherFor,
   gatherOptionsAt,
@@ -327,7 +328,7 @@ describe("simultaneous rounds", () => {
     ]);
   });
 
-  it("caps a Base at seven minerals per turn", () => {
+  it("caps a Base at five minerals per turn", () => {
     const state = createSkirmishState();
     const extraWorkers: PlayUnit[] = Array.from({ length: 7 }, (_, i) => ({
       id: `a-worker-${i + 2}`,
@@ -345,7 +346,7 @@ describe("simultaneous rounds", () => {
     ];
     const stacked = { ...state, units };
 
-    expect(harvestFor(stacked, "a")).toEqual({ minerals: 7, gas: 0 });
+    expect(harvestFor(stacked, "a")).toEqual({ minerals: 5, gas: 0 });
   });
 
   it("ignores forged, impossible and duplicate moves", () => {
@@ -984,6 +985,123 @@ describe("structure harvesting", () => {
       ],
     };
 
-    expect(harvestFor(stacked, "a")).toEqual({ minerals: 7, gas: 3 });
+    expect(harvestFor(stacked, "a")).toEqual({ minerals: 5, gas: 3 });
+  });
+});
+
+describe("elimination", () => {
+  const base = (id: string, owner: Player, col: number, row: number): PlayUnit => ({
+    id,
+    owner,
+    typeId: "base",
+    col,
+    row,
+    moved: false,
+  });
+
+  const soldiers = (owner: Player, col: number, row: number): PlayUnit[] =>
+    Array.from({ length: 4 }, (_, index) => ({
+      id: `${owner}-attacker-${index}`,
+      owner,
+      typeId: "soldier" as const,
+      col,
+      row,
+      moved: false,
+    }));
+
+  it("reads the winner from the structures left on the board", () => {
+    const aBase = base("a-base", "a", 2, 0);
+    const bBase = base("b-base", "b", 2, 4);
+    const worker: PlayUnit = {
+      id: "a-worker",
+      owner: "a",
+      typeId: "worker",
+      col: 2,
+      row: 0,
+      moved: false,
+    };
+
+    expect(eliminationWinner([aBase, bBase])).toBeNull();
+    expect(eliminationWinner([aBase, worker])).toBe("a");
+    expect(eliminationWinner([bBase, worker])).toBe("b");
+    expect(eliminationWinner([worker])).toBe("draw");
+  });
+
+  it("eliminates a player after immediate practice combat", () => {
+    const state = createInitialState();
+    const attackers = soldiers("a", 1, 2);
+    const units: PlayUnit[] = [
+      base("a-base", "a", 2, 0),
+      base("b-last-base", "b", 1, 3),
+      ...attackers,
+      { id: "b-scout", owner: "b", typeId: "soldier", col: 3, row: 4, moved: false },
+    ];
+    const next = moveUnits(
+      { ...state, units },
+      attackers.map((unit) => unit.id),
+      1,
+      3,
+    );
+
+    expect(unitById(next, "b-last-base")).toBeUndefined();
+    expect(next.winner).toBe("a");
+    expect(next.log.some((line) => line.includes("eliminated"))).toBe(true);
+    // A finished match accepts no more moves or turns.
+    expect(moveUnits(next, ["b-scout"], 3, 3)).toBe(next);
+    expect(endTurn(next)).toBe(next);
+  });
+
+  it("eliminates a player when the host resolves the battle phase", () => {
+    const state = createInitialState();
+    const attackers = soldiers("a", 1, 2);
+    const units: PlayUnit[] = [
+      base("a-base", "a", 1, 2),
+      base("b-last-base", "b", 1, 3),
+      ...attackers,
+    ];
+    const battle = resolveRound(
+      { ...state, units },
+      {
+        a: attackers.map((unit) => ({ unitId: unit.id, col: 1, row: 3 })),
+        b: [],
+      },
+    );
+
+    expect(battle.phase).toBe("battle");
+    const resolved = resolveBattles(battle);
+
+    expect(unitById(resolved, "b-last-base")).toBeUndefined();
+    expect(resolved.winner).toBe("a");
+    expect(resolved.log.some((line) => line.includes("eliminated"))).toBe(true);
+    expect(resolveBattles(resolved)).toBe(resolved);
+    expect(resolveRound(resolved, { a: [], b: [] })).toBe(resolved);
+  });
+
+  it("calls it a draw when both sides lose their last structure", () => {
+    const state = createInitialState();
+    const aAttackers = soldiers("a", 2, 2);
+    const bAttackers = soldiers("b", 0, 3);
+    const units: PlayUnit[] = [
+      base("a-last-base", "a", 1, 2),
+      base("b-last-base", "b", 1, 3),
+      ...aAttackers,
+      ...bAttackers,
+    ];
+    const battle = resolveRound(
+      { ...state, units },
+      {
+        a: aAttackers.map((unit) => ({ unitId: unit.id, col: 1, row: 3 })),
+        b: bAttackers.map((unit) => ({ unitId: unit.id, col: 1, row: 2 })),
+      },
+    );
+
+    expect(battle.phase).toBe("battle");
+    expect(battle.conflicts).toHaveLength(2);
+
+    const resolved = resolveBattles(battle);
+    expect(unitById(resolved, "a-last-base")).toBeUndefined();
+    expect(unitById(resolved, "b-last-base")).toBeUndefined();
+    expect(resolved.winner).toBe("draw");
+    expect(resolved.log.some((line) => line.includes("draw"))).toBe(true);
   });
 });

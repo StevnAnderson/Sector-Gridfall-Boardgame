@@ -10,7 +10,7 @@
  * the next round begins.
  *
  * Workers harvest at the end of the round. A Base on a mineral node turns up to
- * seven assigned Workers into minerals at 1 each; a Refinery on a gas node turns
+ * five assigned Workers into minerals at 1 each; a Refinery on a gas node turns
  * up to three into gas. A hex holding both structures makes the Worker pick one;
  * the choice is remembered until it moves again. Structures off a node produce
  * nothing, and extra Workers beyond the cap add nothing.
@@ -183,8 +183,8 @@ export interface PlayState {
   turn: number;
   stock: Record<Player, Stock>;
   log: string[];
-  /** Set when a player forfeits the online match. */
-  winner: Player | null;
+  /** Set when a player forfeits or is eliminated; "draw" if both are eliminated. */
+  winner: Player | "draw" | null;
   phase: PlayPhase;
   /** Populated while `phase` is "battle"; the borders that should glow. */
   conflicts: Conflict[];
@@ -211,7 +211,7 @@ export const MAP_COLS = 5;
 export const MAP_ROWS = 5;
 
 /** A Base can turn at most this many assigned Workers into minerals. */
-export const BASE_HARVEST_CAP = 7;
+export const BASE_HARVEST_CAP = 5;
 
 /** A Refinery can turn at most this many assigned Workers into gas. */
 export const REFINERY_HARVEST_CAP = 3;
@@ -423,6 +423,35 @@ export function normalizePlayState(state: PlayState): PlayState {
 /** Structures never move once they are on the map. */
 export function isStructureType(typeId: string): boolean {
   return CARD_BY_ID[typeId]?.kind === "structure";
+}
+
+/** True while the player still has at least one structure on the map. */
+function hasStructures(units: PlayUnit[], player: Player): boolean {
+  return units.some(
+    (unit) => unit.owner === player && isStructureType(unit.typeId),
+  );
+}
+
+/**
+ * Winner implied by the board: losing every structure eliminates a player.
+ * Both sides losing their last structure in the same round is a draw.
+ */
+export function eliminationWinner(units: PlayUnit[]): Player | "draw" | null {
+  const aAlive = hasStructures(units, "a");
+  const bAlive = hasStructures(units, "b");
+  if (!aAlive && !bAlive) return "draw";
+  if (!aAlive) return "b";
+  if (!bAlive) return "a";
+  return null;
+}
+
+/** Log line that announces an elimination result. */
+function eliminationLog(winner: Player | "draw"): string {
+  if (winner === "draw") {
+    return "Both players lost all their structures — the game is a draw.";
+  }
+  const eliminated = otherPlayer(winner);
+  return `${PLAYER_LABEL[eliminated]} lost all structures and is eliminated. ${PLAYER_LABEL[winner]} wins.`;
 }
 
 /** Short "3◆ 1▲" cost string for the build window. */
@@ -752,6 +781,7 @@ export function moveUnit(
   row: number,
   gatherFrom?: GatherFrom,
 ): PlayState {
+  if (state.winner) return state;
   const unit = unitById(state, unitId);
   if (!unit || !canMoveTo(state, unit, col, row)) return state;
   if (isEnemyOccupied(state, unit.owner, col, row)) return state;
@@ -809,11 +839,17 @@ export function moveUnits(
       attacks,
     };
     const outcome = applyConflict(state.units, conflict);
+    const eliminated = eliminationWinner(outcome.units);
     return {
       ...state,
       units: outcome.units,
+      winner: state.winner ?? eliminated,
       battles: [outcome.report, ...state.battles].slice(0, 3),
-      log: [...state.log, ...outcome.log].slice(-10),
+      log: [
+        ...state.log,
+        ...outcome.log,
+        ...(eliminated ? [eliminationLog(eliminated)] : []),
+      ].slice(-10),
     };
   }
 
@@ -890,6 +926,7 @@ function describeHarvest(gained: Stock): string {
  * the turn. Turn numbers count completed rounds (Player B ending their turn).
  */
 export function endTurn(state: PlayState): PlayState {
+  if (state.winner) return state;
   const gained = harvestFor(state, state.active);
   const next: Player = state.active === "a" ? "b" : "a";
   const message = `${PLAYER_LABEL[state.active]} ${describeHarvest(gained)}. ${PLAYER_LABEL[next]}'s turn.`;
@@ -1326,6 +1363,9 @@ function finishRound(
     unit.building ? { ...unit, building: false } : unit,
   );
 
+  const eliminated = eliminationWinner(units);
+  const winner = state.winner ?? eliminated;
+
   const log = [...state.log, ...logLines];
   for (const player of ["a", "b"] as Player[]) {
     const gained = player === "a" ? gainedA : gainedB;
@@ -1333,10 +1373,12 @@ function finishRound(
       log.push(`${PLAYER_LABEL[player]} ${describeHarvest(gained)}.`);
     }
   }
-  log.push(`Round ${state.turn + 1} begins.`);
+  if (eliminated) log.push(eliminationLog(eliminated));
+  if (!winner) log.push(`Round ${state.turn + 1} begins.`);
 
   return {
     ...movedState,
+    winner,
     units: freshUnits,
     turn: state.turn + 1,
     stock: {
